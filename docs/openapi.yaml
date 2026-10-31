@@ -1,0 +1,598 @@
+openapi: 3.1.0
+info:
+  title: GhostLedger API
+  version: 0.1.0
+  summary: Receipt extraction, ledger storage and insights powered by Gemma 4.
+  description: |
+    Contract between the GhostLedger frontend and backend.
+    See `docs/API.md` for the main flows and how to run a mock server.
+
+    Conventions:
+    - All amounts are decimal numbers in the receipt's currency (e.g. `3960` HUF, `12.5` EUR).
+    - Currencies are ISO 4217 codes (`HUF`, `JPY`, `EUR`).
+    - Dates are ISO 8601 (`2026-10-30`); timestamps are UTC (`2026-10-31T14:05:00Z`).
+    - Errors always use the `Error` schema.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local backend
+  - url: http://localhost:4010
+    description: Prism mock server, serves paths without the /api/v1 prefix (see docs/API.md)
+
+security:
+  - {}
+  - appPassword: []
+
+tags:
+  - name: system
+    description: Health and available modes
+  - name: receipts
+    description: Receipt extraction and CRUD
+  - name: ledger
+    description: CSV export and aggregates
+  - name: insights
+    description: AI-generated monthly insights
+
+paths:
+  /health:
+    get:
+      tags: [system]
+      operationId: getHealth
+      summary: Backend status and which modes are currently available
+      description: |
+        The frontend should call this on startup and before switching modes,
+        to enable or disable the Online/Offline toggle.
+      security: [{}]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+              examples:
+                bothAvailable:
+                  value:
+                    status: ok
+                    default_mode: online
+                    password_required: false
+                    modes:
+                      online: { available: true, models: { extract: gemma-4-26b-a4b-it, insight: gemma-4-31b-it }, reason: null }
+                      offline: { available: true, models: { extract: "gemma4:e2b", insight: "gemma4:e2b" }, reason: null }
+                offlineOnly:
+                  value:
+                    status: ok
+                    default_mode: offline
+                    password_required: false
+                    modes:
+                      online: { available: false, models: { extract: gemma-4-26b-a4b-it, insight: gemma-4-31b-it }, reason: GEMINI_API_KEY is not set }
+                      offline: { available: true, models: { extract: "gemma4:e2b", insight: "gemma4:e2b" }, reason: null }
+
+  /receipts/extract:
+    post:
+      tags: [receipts]
+      operationId: extractReceipt
+      summary: Read a receipt image with Gemma 4 (does NOT save it)
+      description: |
+        Returns a draft receipt plus validation results. The frontend shows the
+        draft in an editable table, and saves it with `POST /receipts`.
+
+        If the requested mode is unavailable, the backend falls back to the other
+        mode when possible and sets `fallback: true`.
+        Offline extraction can take ~20 s on CPU, so use a client timeout of at least 120 s.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image]
+              properties:
+                image:
+                  type: string
+                  format: binary
+                  description: JPEG, PNG or WebP. Max 10 MB.
+                mode:
+                  $ref: "#/components/schemas/Mode"
+            encoding:
+              image:
+                contentType: image/jpeg, image/png, image/webp
+      responses:
+        "200":
+          description: Extraction finished (check `validation` for problems)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExtractionResult" }
+              examples:
+                hungarianReceipt:
+                  value:
+                    draft:
+                      store: SPAR Magyarország Kft.
+                      date: "2026-10-30"
+                      currency: HUF
+                      payment_method: card
+                      items:
+                        - { name: "Tej 2,8% 1l", name_en: "Milk 2.8% 1l", qty: 1, unit_price: 389, price: 389, category: groceries }
+                        - { name: Kenyér fehér, name_en: White bread, qty: 1, unit_price: 649, price: 649, category: groceries }
+                        - { name: Alma 1kg, name_en: Apples 1kg, qty: 2, unit_price: 799, price: 1598, category: groceries }
+                        - { name: Kávé őrölt 250g, name_en: Ground coffee 250g, qty: 1, unit_price: 1324, price: 1324, category: groceries }
+                      tax_amount: 842
+                      total: 3960
+                    validation:
+                      ok: true
+                      items_sum: 3960
+                      difference: 0
+                      warnings: []
+                    meta:
+                      mode_used: offline
+                      model: "gemma4:e2b"
+                      fallback: false
+                      elapsed_ms: 18900
+                totalMismatch:
+                  value:
+                    draft:
+                      store: SPAR Magyarország Kft.
+                      date: "2026-10-30"
+                      currency: HUF
+                      payment_method: card
+                      items:
+                        - { name: Tej, name_en: Milk, qty: 1, unit_price: null, price: 0, category: groceries }
+                        - { name: Kenyér fehér, name_en: White bread, qty: 1, unit_price: 649, price: 649, category: groceries }
+                      tax_amount: 842
+                      total: 3960
+                    validation:
+                      ok: false
+                      items_sum: 649
+                      difference: -3311
+                      warnings:
+                        - { code: TOTAL_MISMATCH, field: total, item_index: null, message: "Items add up to 649 but the receipt total is 3960." }
+                        - { code: ZERO_PRICE, field: price, item_index: 0, message: Item has a price of 0. }
+                    meta:
+                      mode_used: offline
+                      model: "gemma4:e2b"
+                      fallback: false
+                      elapsed_ms: 21400
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "422": { $ref: "#/components/responses/ExtractionFailed" }
+        "503": { $ref: "#/components/responses/ModeUnavailable" }
+
+  /receipts:
+    get:
+      tags: [receipts]
+      operationId: listReceipts
+      summary: List saved receipts (newest first)
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date }, description: Inclusive start date }
+        - { name: to, in: query, schema: { type: string, format: date }, description: Inclusive end date }
+        - { name: category, in: query, schema: { $ref: "#/components/schemas/Category" }, description: Only receipts with at least one item in this category }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReceiptList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [receipts]
+      operationId: createReceipt
+      summary: Save a (reviewed) receipt to the ledger
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReceiptInput" }
+      responses:
+        "201":
+          description: Created
+          headers:
+            Location: { schema: { type: string }, description: "/api/v1/receipts/{id}" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Receipt" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /receipts/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: integer } }
+    get:
+      tags: [receipts]
+      operationId: getReceipt
+      summary: Get one receipt
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Receipt" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [receipts]
+      operationId: updateReceipt
+      summary: Replace a receipt (full update)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReceiptInput" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Receipt" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [receipts]
+      operationId: deleteReceipt
+      summary: Delete a receipt
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /export.csv:
+    get:
+      tags: [ledger]
+      operationId: exportCsv
+      summary: Download the ledger as CSV (one row per item)
+      description: |
+        Columns: `receipt_id,date,store,currency,item_name,item_name_en,qty,unit_price,price,category,payment_method`.
+        UTF-8 with BOM so that Excel opens accented characters correctly.
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        "200":
+          description: CSV file
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              example: attachment; filename="ghostledger-2026-10.csv"
+          content:
+            text/csv:
+              schema: { type: string }
+              example: |
+                receipt_id,date,store,currency,item_name,item_name_en,qty,unit_price,price,category,payment_method
+                1,2026-10-30,SPAR Magyarország Kft.,HUF,"Tej 2,8% 1l",Milk 2.8% 1l,1,389,389,groceries,card
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /summary:
+    get:
+      tags: [ledger]
+      operationId: getSummary
+      summary: Aggregated spending for one month (computed locally, no AI)
+      description: Used by the dashboard. This is also exactly what `privacy=aggregates` sends to the Online model.
+      parameters:
+        - name: month
+          in: query
+          required: true
+          schema: { type: string, pattern: '^\d{4}-\d{2}$' }
+          example: 2026-10
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Summary" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /insights/preview:
+    post:
+      tags: [insights]
+      operationId: previewInsights
+      summary: Show exactly what would be sent to the model (does NOT call any model)
+      description: The frontend must show this payload to the user before calling `POST /insights` in Online mode.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InsightRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InsightPreview" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /insights:
+    post:
+      tags: [insights]
+      operationId: createInsights
+      summary: Generate monthly insights with Gemma 4
+      description: |
+        `payload_hash` must match the value returned by `POST /insights/preview`
+        for the same request, so that the data sent is exactly what the user saw.
+        Required in Online mode; ignored in Offline mode.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/InsightRequest"
+                - type: object
+                  properties:
+                    payload_hash: { type: string, description: From `POST /insights/preview` }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InsightResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: "`payload_hash` does not match the current data (preview again)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: { code: PREVIEW_MISMATCH, message: The data changed since the preview. Please preview again. } }
+        "503": { $ref: "#/components/responses/ModeUnavailable" }
+
+components:
+  securitySchemes:
+    appPassword:
+      type: http
+      scheme: bearer
+      description: |
+        Only when `APP_PASSWORD` is set on the backend (`/health` returns `password_required: true`).
+        Send `Authorization: Bearer <APP_PASSWORD>`.
+
+  schemas:
+    Health:
+      type: object
+      required: [status, default_mode, password_required, modes]
+      properties:
+        status: { type: string, enum: [ok] }
+        default_mode: { $ref: "#/components/schemas/Mode" }
+        password_required: { type: boolean }
+        modes:
+          type: object
+          required: [online, offline]
+          properties:
+            online: { $ref: "#/components/schemas/ModeStatus" }
+            offline: { $ref: "#/components/schemas/ModeStatus" }
+
+    ModeStatus:
+      type: object
+      required: [available, models, reason]
+      properties:
+        available: { type: boolean }
+        models:
+          type: object
+          required: [extract, insight]
+          properties:
+            extract: { type: string }
+            insight: { type: string }
+        reason: { type: [string, "null"], description: Why the mode is unavailable }
+
+    Mode:
+      type: string
+      enum: [online, offline]
+      description: Omit to use the backend's `DEFAULT_MODE`.
+
+    Category:
+      type: string
+      enum: [groceries, dining, transport, household, health, entertainment, other]
+
+    PaymentMethod:
+      type: [string, "null"]
+      enum: [cash, card, mobile, other, null]
+
+    Item:
+      type: object
+      required: [name, price, category]
+      properties:
+        name: { type: string, description: Item name as printed on the receipt, example: Kenyér fehér }
+        name_en: { type: [string, "null"], description: English translation, example: White bread }
+        qty: { type: number, minimum: 0, default: 1 }
+        unit_price: { type: [number, "null"], minimum: 0, description: May be null if the model could not read it }
+        price: { type: number, minimum: 0, description: Line total. This is the value used for all sums. }
+        category: { $ref: "#/components/schemas/Category" }
+
+    ReceiptInput:
+      type: object
+      description: A receipt as reviewed by the user. Also the shape of an extraction draft.
+      required: [store, date, currency, items, total]
+      properties:
+        store: { type: string, example: SPAR Magyarország Kft. }
+        date: { type: string, format: date, example: "2026-10-30" }
+        currency: { type: string, pattern: "^[A-Z]{3}$", example: HUF }
+        payment_method: { $ref: "#/components/schemas/PaymentMethod" }
+        items:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/Item" }
+        tax_amount: { type: [number, "null"], minimum: 0, description: Tax amount (not rate) }
+        total: { type: number, minimum: 0 }
+        source_mode:
+          oneOf:
+            - $ref: "#/components/schemas/Mode"
+            - type: "null"
+          description: Which mode produced the draft (null if entered manually)
+
+    Receipt:
+      allOf:
+        - $ref: "#/components/schemas/ReceiptInput"
+        - type: object
+          required: [id, created_at, updated_at]
+          properties:
+            id: { type: integer, example: 1 }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+
+    ReceiptList:
+      type: object
+      required: [items, total_count]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Receipt" }
+        total_count: { type: integer }
+
+    Validation:
+      type: object
+      required: [ok, items_sum, difference, warnings]
+      properties:
+        ok: { type: boolean, description: True when there are no warnings }
+        items_sum: { type: number, description: "Sum of item `price`, computed by the backend" }
+        difference: { type: number, description: "items_sum - total" }
+        warnings:
+          type: array
+          items:
+            type: object
+            required: [code, message]
+            properties:
+              code:
+                type: string
+                enum: [TOTAL_MISMATCH, ZERO_PRICE, QTY_PRICE_MISMATCH, MISSING_DATE, FUTURE_DATE, UNKNOWN_CURRENCY, TAX_LOOKS_LIKE_RATE]
+              field: { type: [string, "null"], description: Field name to highlight }
+              item_index: { type: [integer, "null"], description: "Row to highlight (0-based), null for receipt-level fields" }
+              message: { type: string }
+
+    ExtractionResult:
+      type: object
+      required: [draft, validation, meta]
+      properties:
+        draft: { $ref: "#/components/schemas/ReceiptInput" }
+        validation: { $ref: "#/components/schemas/Validation" }
+        meta: { $ref: "#/components/schemas/ModelMeta" }
+
+    ModelMeta:
+      type: object
+      required: [mode_used, model, fallback, elapsed_ms]
+      properties:
+        mode_used: { $ref: "#/components/schemas/Mode" }
+        model: { type: string, example: "gemma4:e2b" }
+        fallback: { type: boolean, description: True if the requested mode was unavailable and the other one was used }
+        elapsed_ms: { type: integer }
+
+    Summary:
+      type: object
+      required: [month, currency_totals, by_category, receipt_count]
+      properties:
+        month: { type: string, example: 2026-10 }
+        receipt_count: { type: integer, example: 14 }
+        currency_totals:
+          type: object
+          additionalProperties: { type: number }
+          example: { HUF: 42150, EUR: 18.4 }
+        by_category:
+          type: array
+          items:
+            type: object
+            required: [category, currency, amount, count]
+            properties:
+              category: { $ref: "#/components/schemas/Category" }
+              currency: { type: string }
+              amount: { type: number }
+              count: { type: integer, description: Number of receipts with this category }
+          example:
+            - { category: groceries, currency: HUF, amount: 28400, count: 9 }
+            - { category: dining, currency: HUF, amount: 13750, count: 5 }
+
+    InsightRequest:
+      type: object
+      required: [month]
+      properties:
+        month: { type: string, pattern: '^\d{4}-\d{2}$', example: 2026-10 }
+        mode: { $ref: "#/components/schemas/Mode" }
+        privacy:
+          type: string
+          enum: [aggregates, full]
+          default: aggregates
+          description: "`aggregates` sends only `Summary`; `full` also sends every item (no images)."
+        language: { type: string, default: en, description: "Language of the generated text (e.g. en, ja, hu)" }
+
+    InsightPreview:
+      type: object
+      required: [mode, privacy, destination, payload, payload_hash]
+      properties:
+        mode: { $ref: "#/components/schemas/Mode" }
+        privacy: { type: string, enum: [aggregates, full] }
+        destination:
+          type: string
+          description: Where the payload will go
+          example: Gemini API (gemma-4-31b-it)
+        payload: { type: object, description: Exact JSON that will be sent to the model }
+        payload_hash: { type: string, description: "SHA-256 of `payload`, pass it to `POST /insights`" }
+
+    InsightResult:
+      type: object
+      required: [text, meta]
+      properties:
+        text: { type: string, description: Markdown }
+        highlights:
+          type: array
+          items:
+            type: object
+            required: [title, detail]
+            properties:
+              title: { type: string, example: Dining out is up }
+              detail: { type: string, example: "You ate out 5 times (13,750 HUF), 40% of your non-grocery spending." }
+        meta: { $ref: "#/components/schemas/ModelMeta" }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [BAD_REQUEST, UNAUTHORIZED, NOT_FOUND, PAYLOAD_TOO_LARGE, INVALID_IMAGE, EXTRACTION_FAILED, MODE_UNAVAILABLE, PREVIEW_MISMATCH, INTERNAL]
+            message: { type: string, description: "Human-readable, safe to show in the UI" }
+            details: { type: object, description: Optional extra info (e.g. field errors) }
+
+  responses:
+    BadRequest:
+      description: Invalid input
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: BAD_REQUEST, message: "currency must be a 3-letter ISO code", details: { field: currency } } }
+    Unauthorized:
+      description: Missing or wrong password
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: UNAUTHORIZED, message: Password required. } }
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: NOT_FOUND, message: Receipt 42 not found. } }
+    PayloadTooLarge:
+      description: Image larger than 10 MB
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: PAYLOAD_TOO_LARGE, message: Image must be 10 MB or smaller. } }
+    ExtractionFailed:
+      description: The image was not a readable receipt, or the model output failed validation twice
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: EXTRACTION_FAILED, message: "Could not read a receipt from this image. Try a sharper photo." } }
+    ModeUnavailable:
+      description: No mode is available (e.g. no API key and Ollama is down)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: MODE_UNAVAILABLE, message: Neither Online nor Offline mode is available. } }
