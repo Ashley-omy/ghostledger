@@ -144,6 +144,33 @@ button.link {
   font-size: 1.1rem;
 }
 
+.button.big.secondary {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--text);
+  padding: 1.1rem;
+}
+
+.card.pending {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  border-color: var(--warn);
+}
+
+.card.pending img {
+  width: 4.5rem;
+  height: 6rem;
+  object-fit: cover;
+  border-radius: 0.4rem;
+  flex: none;
+}
+
+.card.pending > div {
+  margin-top: 0;
+  flex: 1;
+}
+
 section > button.secondary {
   width: 100%;
 }

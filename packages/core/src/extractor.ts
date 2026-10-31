@@ -4,7 +4,7 @@
  * The draft is not saved; the user reviews it first.
  */
 import { AppError } from './errors';
-import { checkImage, downscale } from './image';
+import { checkImage, checkImageSize, downscale } from './image';
 import { repairJson } from './json';
 import { postProcess } from './postprocess';
 import { EXTRACTION_PROMPT, retryPrompt } from './prompt';
@@ -42,6 +42,7 @@ export async function extractReceipt(
   checkImage(image);
   const started = performance.now();
   const small = await downscale(image, opts.maxSide ?? 1024);
+  checkImageSize(small);
 
   let parsed = parseModelOutput(await provider.extract(small, EXTRACTION_PROMPT, opts));
   if (!parsed.ok) {

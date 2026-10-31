@@ -47,6 +47,10 @@ export default defineConfig({
       devOptions: { enabled: false },
     }),
   ],
+  // `npm run phone`: the production build, reachable through a tunnel / published port.
+  // Use it for phone testing: the dev server's client reloads the page whenever its connection
+  // drops, e.g. every time the camera app opens, which loses the photo.
+  preview: { port: 4173, allowedHosts: true },
   worker: { format: 'es' },
   optimizeDeps: {
     // sqlite-wasm loads its .wasm relative to its own module; pre-bundling breaks that.

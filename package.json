@@ -10,6 +10,7 @@
     "dev": "npm run dev -w @ghostledger/web",
     "build": "npm run build -w @ghostledger/web",
     "preview": "npm run preview -w @ghostledger/web",
+    "phone": "npm run build && npm run preview -w @ghostledger/web -- --host",
     "test": "npm run test -w @ghostledger/core",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },

@@ -18,7 +18,7 @@ import {
   TextStreamer,
 } from '@huggingface/transformers';
 import { DownloadError, downloadModel } from '../model/download';
-import { fetchManifest } from '../model/files';
+import { fetchManifest, hubBlockingFetch } from '../model/files';
 import { getModelStatus, OpfsModelCache, OpfsModelStore } from '../model/opfs';
 import type { FromWorker, LoadOptions, ModelProgress, ToWorker } from './local.protocol';
 
@@ -33,6 +33,8 @@ const stops = new Map<number, InterruptableStoppingCriteria>();
 const aborts = new Map<number, AbortController>();
 
 const post = (msg: FromWorker) => self.postMessage(msg);
+// Captured before env.fetch is replaced; the downloader uses the real network.
+const realFetch = globalThis.fetch.bind(globalThis);
 const progress = (id: number, p: ModelProgress) => post({ type: 'progress', id, progress: p });
 
 class WorkerError extends Error {
@@ -96,8 +98,11 @@ async function load(id: number, opts: LoadOptions): Promise<Loaded> {
       if (status.state !== 'complete') throw new WorkerError('MODEL_NOT_DOWNLOADED', 'Download the offline model in Settings first.');
 
       // Read model files only from OPFS; never download from inside Transformers.js.
-      env.allowRemoteModels = false;
+      // Transformers.js rejects allowLocalModels=false + allowRemoteModels=false, so remote stays "on"
+      // and env.fetch answers every Hub request with a local 404 (see hubBlockingFetch).
       env.allowLocalModels = false;
+      env.allowRemoteModels = true;
+      env.fetch = hubBlockingFetch(realFetch) as any;
       env.useBrowserCache = false;
       env.useCustomCache = true;
       env.customCache = new OpfsModelCache(opts.modelId, opts.dtype) as any;

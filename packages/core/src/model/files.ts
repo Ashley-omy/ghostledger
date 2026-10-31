@@ -65,6 +65,25 @@ export function repoPathFromKey(key: string, modelId: string): string | null {
   return rest || null;
 }
 
+const HUB_URL = /^https:\/\/(huggingface\.co|hf\.co)\//;
+
+/**
+ * A fetch for Transformers.js that never downloads model files. Transformers.js refuses to run with
+ * both `allowLocalModels` and `allowRemoteModels` off, so we leave remote "on" and answer every Hub
+ * request with a local 404 instead. Files we downloaded are served earlier by OpfsModelCache;
+ * a 404 makes optional files resolve to null and missing required files fail with a clear error.
+ * Other URLs (e.g. the ONNX Runtime .wasm on jsDelivr) go to the real fetch.
+ */
+export function hubBlockingFetch(realFetch: typeof fetch): typeof fetch {
+  return (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (HUB_URL.test(url)) {
+      return Promise.resolve(new Response(null, { status: 404, statusText: 'Not part of the downloaded model' }));
+    }
+    return realFetch(input, init);
+  };
+}
+
 export async function fetchManifest(
   modelId: string,
   dtype: ModelDtype,

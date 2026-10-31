@@ -8,10 +8,11 @@ import {
   type LLMProvider,
   type Mode,
 } from '@ghostledger/core';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { emptyReceipt, ReviewForm } from '../components/ReviewForm';
 import { useApp } from '../lib/app-context';
 import { useOnline } from '../lib/hooks';
+import { clearPendingPhoto, loadPendingPhoto, pendingAsFile, savePendingPhoto, type PendingPhoto } from '../lib/pending-photo';
 
 type State =
   | { step: 'idle' }
@@ -26,6 +27,25 @@ export function ScanScreen({ goToSettings }: { goToSettings: () => void }) {
   const [state, setState] = useState<State>({ step: 'idle' });
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
+  // A photo from before a page reload (camera app open, or the phone ran out of memory mid-scan).
+  const [pending, setPending] = useState<PendingPhoto | null>(null);
+  const [pendingUrl, setPendingUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    void loadPendingPhoto().then(setPending);
+  }, []);
+
+  useEffect(() => {
+    if (!pending) return setPendingUrl(null);
+    const url = URL.createObjectURL(pending.blob);
+    setPendingUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [pending]);
+
+  const discardPending = () => {
+    setPending(null);
+    void clearPendingPhoto();
+  };
 
   const run = async (photo: File, requested: Mode) => {
     setSavedMsg(null);
@@ -46,10 +66,13 @@ export function ScanScreen({ goToSettings }: { goToSettings: () => void }) {
     }
   };
 
-  const onPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const onPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const photo = e.target.files?.[0];
     e.target.value = '';
-    if (photo) void run(photo, mode);
+    if (!photo) return;
+    setPending(null); // hide the "retry" card while this photo is processed
+    await savePendingPhoto(photo, mode);
+    void run(photo, mode);
   };
 
   if (state.step === 'review') {
@@ -60,9 +83,13 @@ export function ScanScreen({ goToSettings }: { goToSettings: () => void }) {
           initial={state.result?.draft ?? emptyReceipt()}
           extraWarnings={state.result?.validation.warnings.filter((w) => w.code === 'TAX_LOOKS_LIKE_RATE' || w.code === 'MISSING_DATE')}
           meta={state.result?.meta}
-          onCancel={() => setState({ step: 'idle' })}
+          onCancel={() => {
+            void clearPendingPhoto();
+            setState({ step: 'idle' });
+          }}
           onSave={async (receipt) => {
             const saved = await ledger.create(receipt);
+            void clearPendingPhoto();
             setSavedMsg(`Saved receipt #${saved.id} from ${saved.store || 'unknown store'}.`);
             setState({ step: 'idle' });
           }}
@@ -132,9 +159,37 @@ export function ScanScreen({ goToSettings }: { goToSettings: () => void }) {
         </div>
       ) : (
         <>
+          {pending && pendingUrl && (
+            <div className="card pending">
+              <img src={pendingUrl} alt="Last receipt photo" />
+              <div>
+                <p>Your last photo wasn't finished.</p>
+                <div className="actions">
+                  <button className="secondary" onClick={discardPending}>
+                    Discard
+                  </button>
+                  <button
+                    onClick={() => {
+                      const p = pending;
+                      setPending(null);
+                      void run(pendingAsFile(p), mode);
+                    }}
+                  >
+                    Read it again
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           <label className="button big">
-            📸 Take or choose a photo
+            📸 Take a photo
+            {/* capture opens the camera directly */}
             <input type="file" accept="image/*" capture="environment" hidden onChange={onPhoto} />
+          </label>
+          <label className="button big secondary">
+            🖼️ Choose from gallery
+            {/* no capture attribute: the phone offers its photo library / files */}
+            <input type="file" accept="image/*" hidden onChange={onPhoto} />
           </label>
           <button className="secondary" onClick={() => setState({ step: 'review', result: null })}>
             ✍️ Enter manually
@@ -147,6 +202,13 @@ export function ScanScreen({ goToSettings }: { goToSettings: () => void }) {
       {state.step === 'error' && (
         <div className="error">
           <p>{toUserMessage(state.error)}</p>
+          {!(state.error instanceof AppError && ['MODEL_NOT_DOWNLOADED', 'INVALID_IMAGE'].includes(state.error.code)) && (
+            <div className="actions">
+              <button className="secondary" onClick={() => run(state.photo, mode)}>
+                Try again
+              </button>
+            </div>
+          )}
           {state.error instanceof AppError && state.error.code === 'MODEL_NOT_DOWNLOADED' && (
             <div className="actions">
               <button onClick={goToSettings}>Open Settings</button>

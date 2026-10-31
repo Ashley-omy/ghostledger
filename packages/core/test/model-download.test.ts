@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { downloadModel, type FileSink, type ModelStore } from '../src/model/download';
-import { repoPathFromKey, selectModelFiles, type HubTreeEntry, type ModelManifest } from '../src/model/files';
+import { hubBlockingFetch, repoPathFromKey, selectModelFiles, type HubTreeEntry, type ModelManifest } from '../src/model/files';
 
 // ---------- files ----------
 
@@ -51,6 +51,21 @@ describe('repoPathFromKey', () => {
     [`/models/${id}/tokenizer.json`, 'tokenizer.json'],
     ['https://cdn.jsdelivr.net/npm/onnxruntime-web@1/dist/ort.wasm', null],
   ])('%s → %s', (key, expected) => expect(repoPathFromKey(key, id)).toBe(expected));
+});
+
+describe('hubBlockingFetch', () => {
+  it('answers Hub requests with a local 404 and passes other URLs through', async () => {
+    const seen: string[] = [];
+    const real = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response('ok');
+    }) as typeof fetch;
+    const f = hubBlockingFetch(real);
+    expect((await f('https://huggingface.co/org/m/resolve/main/special_tokens_map.json')).status).toBe(404);
+    expect((await f(new URL('https://hf.co/org/m/resolve/main/x.json'))).status).toBe(404);
+    expect(await (await f('https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.wasm')).text()).toBe('ok');
+    expect(seen).toEqual(['https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.wasm']);
+  });
 });
 
 // ---------- resumable download ----------

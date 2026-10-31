@@ -2,8 +2,14 @@ import { AppError } from './errors';
 
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
+/** Before downscaling: only the type. Full-resolution phone photos are often larger than 10 MB. */
 export function checkImage(file: Blob): void {
-  if (!file.type.startsWith('image/')) throw new AppError('INVALID_IMAGE');
+  // Some Android gallery pickers return an empty type; decoding in downscale() catches real non-images.
+  if (file.type && !file.type.startsWith('image/')) throw new AppError('INVALID_IMAGE');
+}
+
+/** After downscaling: what goes to a model (and possibly over the network in Online mode). */
+export function checkImageSize(file: Blob): void {
   if (file.size > MAX_IMAGE_BYTES) throw new AppError('PAYLOAD_TOO_LARGE');
 }
 
@@ -14,7 +20,16 @@ export function checkImage(file: Blob): void {
  */
 export async function downscale(image: Blob, maxSide = 1024, quality = 0.9): Promise<Blob> {
   if (typeof createImageBitmap !== 'function' || typeof OffscreenCanvas === 'undefined') return image;
-  const bitmap = await createImageBitmap(image);
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(image);
+  } catch (err) {
+    throw new AppError(
+      'INVALID_IMAGE',
+      "This photo couldn't be opened (unsupported format such as HEIC?). Try a JPEG or PNG, or take a screenshot of it.",
+      { cause: err },
+    );
+  }
   try {
     const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
     if (scale === 1 && image.type === 'image/jpeg') return image;
