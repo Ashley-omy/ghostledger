@@ -56,7 +56,12 @@ Both modes use **the same Gemma 4 model family, the same prompts and the same ou
 Browser (PC / phone)
    │
    ▼
-┌─ Container: app (Streamlit) ──────────────────────────┐
+┌─ Container: frontend (Streamlit, :8501) ─┐
+│  UI only — talks to the backend via REST │
+└──────────────────┬───────────────────────┘
+                   │ HTTP  /api/v1  (docs/openapi.yaml)
+                   ▼
+┌─ Container: backend (FastAPI, :8000) ─────────────────┐
 │  extractor.py ── LLMProvider ──┬─ OllamaProvider ─────┼──▶ Container: ollama (gemma4:e2b)   📴 Offline
 │  ledger.py   (SQLite / CSV)    └─ GeminiProvider ─────┼──▶ Gemini API (Gemma 4 26B / 31B)    ☁️ Online
 │  insights.py (aggregation + privacy filter)           │
@@ -64,6 +69,7 @@ Browser (PC / phone)
         volume: ./data/ledger.db
 ```
 
+- **API contract:** the frontend and backend share only the REST API defined in [`docs/openapi.yaml`](docs/openapi.yaml). See [`docs/API.md`](docs/API.md) for the main flows and how to develop the frontend against a mock server.
 - **`LLMProvider`:** a single interface with two methods, `extract(image) -> Receipt` and `analyze(summary) -> str`. Switching modes just swaps the implementation.
 - **`OllamaProvider`** uses Ollama's structured output (`format=<JSON schema>`), which is more robust than tool calling for extraction. It also sets `think: false`: in our test this was about 3× faster with no loss in accuracy.
 - **`GeminiProvider`** asks for JSON that matches the `Receipt` schema, and uses `thinking_level="high"` for insights.
@@ -93,18 +99,23 @@ docker compose exec ollama ollama pull gemma4:e2b   # first run only (~4.6 GB)
 ```
 
 ### 3. Open
-Go to **http://localhost:8501**.
+- App: **http://localhost:8501**
+- API docs (Swagger UI): **http://localhost:8000/docs**
 
-> 💡 **Already have Ollama installed on your machine?** Run `docker compose up -d --build app` to start only the app, and set `OLLAMA_HOST=http://host.docker.internal:11434` in `.env`. This is also the easiest way to use your GPU on Windows or macOS.
+> 💡 **Already have Ollama installed on your machine?** Run `docker compose up -d --build backend frontend` to skip the Ollama container, and set `OLLAMA_HOST=http://host.docker.internal:11434` in `.env`. This is also the easiest way to use your GPU on Windows or macOS.
 
 <details>
 <summary>Run without Docker</summary>
 
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r backend/requirements.txt -r frontend/requirements.txt
 ollama pull gemma4:e2b                               # requires Ollama installed natively
-OLLAMA_HOST=http://localhost:11434 streamlit run app/main.py
+
+# terminal 1 — backend
+OLLAMA_HOST=http://localhost:11434 uvicorn app.main:app --app-dir backend --port 8000
+# terminal 2 — frontend
+API_BASE_URL=http://localhost:8000/api/v1 streamlit run frontend/main.py
 ```
 </details>
 
@@ -121,13 +132,15 @@ OLLAMA_HOST=http://localhost:11434 streamlit run app/main.py
 | `OLLAMA_HOST` | `http://ollama:11434` | Ollama endpoint for Offline mode |
 | `LOCAL_MODEL` | `gemma4:e2b` | Offline model. Try `gemma4:e4b` for higher accuracy if you have enough memory |
 | `APP_PASSWORD` | *(empty)* | Simple password gate. **Set this for public deployments** |
-| `DATA_DIR` | `/data` | Where `ledger.db` and the CSV exports are stored |
+| `DATA_DIR` | `/data` | *(backend)* Where `ledger.db` and the CSV exports are stored |
+| `CORS_ORIGINS` | `http://localhost:8501` | *(backend)* Comma-separated origins allowed to call the API |
+| `API_BASE_URL` | `http://backend:8000/api/v1` | *(frontend)* Backend URL. Use `http://localhost:4010` for the mock server |
 
 ---
 
 ## 🐳 Container Files
 
-**`Dockerfile`**
+**`backend/Dockerfile`**
 ```dockerfile
 FROM python:3.12-slim
 WORKDIR /app
@@ -135,21 +148,38 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 ENV DATA_DIR=/data
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+**`frontend/Dockerfile`**
+```dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
 EXPOSE 8501
-CMD ["streamlit", "run", "app/main.py", "--server.address=0.0.0.0", "--server.port=8501"]
+CMD ["streamlit", "run", "main.py", "--server.address=0.0.0.0", "--server.port=8501"]
 ```
 
 **`compose.yaml`**
 ```yaml
 services:
-  app:
-    build: .
-    ports: ["8501:8501"]
+  backend:
+    build: ./backend
+    ports: ["8000:8000"]
     env_file: .env
     environment:
       OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
     volumes: ["./data:/data"]
     extra_hosts: ["host.docker.internal:host-gateway"]
+  frontend:
+    build: ./frontend
+    ports: ["8501:8501"]
+    environment:
+      API_BASE_URL: http://backend:8000/api/v1
+    depends_on: [backend]
   ollama:
     image: ollama/ollama:latest   # pin a version >= 0.20 for Gemma 4
     volumes: ["ollama:/root/.ollama"]
@@ -167,9 +197,9 @@ The public demo runs **Online mode only**, because CPU-only cloud servers are to
 # On a Droplet created from the "Docker" Marketplace image
 git clone https://github.com/Ashley-omy/ghostledger.git && cd ghostledger
 cp .env.example .env    # set GEMINI_API_KEY and APP_PASSWORD
-docker compose up -d --build app
+docker compose up -d --build backend frontend
 ```
-Then open `http://<droplet-ip>:8501`.
+Then open `http://<droplet-ip>:8501`. For a public demo, expose only port 8501 in the Droplet firewall, so the API can't be called directly.
 
 > 🔐 The public demo holds your API key. Always set `APP_PASSWORD`, and do not upload real receipts to it.
 
@@ -191,17 +221,27 @@ Nothing is ever sent to any service other than the Gemini API, and only in Onlin
 
 ```
 ghostledger/
-├─ app/
+├─ docs/
+│  ├─ openapi.yaml     # API contract (source of truth)
+│  └─ API.md           # flows, data rules, mock server
+├─ backend/
+│  ├─ app/
+│  │  ├─ main.py       # FastAPI app + routes (/api/v1)
+│  │  ├─ schemas.py    # Pydantic models matching docs/openapi.yaml
+│  │  ├─ extractor.py  # prompts + validation/retry + post-processing
+│  │  ├─ providers.py  # LLMProvider, OllamaProvider, GeminiProvider
+│  │  ├─ ledger.py     # SQLite + CSV export
+│  │  └─ insights.py   # aggregation + privacy filter + preview hash
+│  ├─ requirements.txt # fastapi, uvicorn, python-multipart, ollama, google-genai, pydantic
+│  └─ Dockerfile
+├─ frontend/
 │  ├─ main.py          # Streamlit UI (scan, edit, ledger, insights, mode toggle)
-│  ├─ extractor.py     # prompts + Receipt schema + validation/retry
-│  ├─ providers.py     # LLMProvider, OllamaProvider, GeminiProvider
-│  ├─ ledger.py        # SQLite + CSV export
-│  └─ insights.py      # aggregation + privacy filter
+│  ├─ api_client.py    # thin wrapper over the REST API (API_BASE_URL)
+│  ├─ requirements.txt # streamlit, requests, pandas
+│  └─ Dockerfile
 ├─ data/               # ledger.db (git-ignored)
 ├─ samples/            # sample receipts (personal info removed)
-├─ Dockerfile
 ├─ compose.yaml
-├─ requirements.txt    # streamlit, ollama, google-genai, pydantic, pandas
 ├─ .env.example
 └─ LICENSE             # Apache-2.0
 ```
@@ -224,9 +264,11 @@ ghostledger/
 
 | Member | Responsibilities |
 |---|---|
-| **A — AI** | Prompts, `Receipt` schema, `OllamaProvider` and `GeminiProvider`, validation and retry, accuracy checks on sample receipts |
-| **B — App / UI** | Streamlit UI: camera and upload, editable table, dashboard, mode toggle, payload preview |
-| **C — Data / Infra** | SQLite, CSV export, aggregation and privacy filter, Dockerfile and compose, deployment, README |
+| **A — AI (backend)** | `providers.py`, `extractor.py`: prompts, `OllamaProvider` and `GeminiProvider`, validation, retry and post-processing, accuracy checks on sample receipts |
+| **B — Frontend** | `frontend/`: camera and upload, editable table with warning highlights, dashboard, mode toggle, payload preview. **Develops against the Prism mock** until the backend is ready |
+| **C — API / Data / Infra (backend)** | `main.py`, `schemas.py`, `ledger.py`, `insights.py`: routes, SQLite, CSV, aggregation and privacy filter. Also Dockerfiles, compose, deployment and README. **Owns `docs/openapi.yaml`** |
+
+The only shared contract is [`docs/openapi.yaml`](docs/openapi.yaml). Any change to it goes in its own PR first (see [`docs/API.md`](docs/API.md)).
 
 **Timeline**
 
