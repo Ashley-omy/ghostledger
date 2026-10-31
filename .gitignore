@@ -10,3 +10,6 @@ data/
 __pycache__/
 *.pyc
 .venv/
+
+# Claude Code personal settings (shared skills in .claude/skills are committed)
+.claude/settings.local.json
