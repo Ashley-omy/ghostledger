@@ -13,3 +13,11 @@ __pycache__/
 
 # Claude Code personal settings (shared skills in .claude/skills are committed)
 .claude/settings.local.json
+
+# Node / Vite
+node_modules/
+dist/
+dev-dist/
+*.tsbuildinfo
+.vite/
+coverage/

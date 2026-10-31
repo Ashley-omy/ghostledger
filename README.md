@@ -76,6 +76,25 @@ Browser (PC / phone)
 - Both providers validate the output with Pydantic and retry once if validation fails.
 - **Post-processing in code, not in the model:** the app recomputes the item total itself, trusts the line prices over quantity × unit price, normalizes currency symbols to ISO codes (e.g. `Ft` → `HUF`), and converts a tax *rate* to a tax *amount* when needed.
 
+### 📱 Local-first mobile PWA (in progress)
+
+We're moving to an architecture where the phone runs everything offline: the UI, Gemma 4 E2B (Transformers.js + WebGPU) and the SQLite ledger (WASM on OPFS). See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The skeleton lives in:
+
+| Path | What |
+|---|---|
+| `apps/web/` | React + Vite PWA: Scan, Ledger, Insights and Settings screens |
+| `packages/core/` | TypeScript logic used by the app: schemas (Zod), prompt, post-processing, validation, `LLMProvider` (local + Gemini), ledger, insights, CSV export |
+
+```bash
+npm install
+npm test            # core unit tests (ledger SQL runs on node:sqlite)
+npm run dev         # http://localhost:5173 (service worker is only active in build/preview)
+npm run build       # static PWA in apps/web/dist (precaches the app shell; the model is downloaded from Settings)
+npm run preview     # serve the build at http://localhost:4173
+```
+
+Requires Node 22+. Service workers, WebGPU and OPFS need a secure origin: `localhost` works, but on a phone you need HTTPS (deploy to static hosting, or use a tunnel such as `cloudflared` / `ngrok`). The Python/Docker stack described below still works for now; it will be retired once the PWA covers both modes.
+
 ---
 
 ## 🚀 Quick Start

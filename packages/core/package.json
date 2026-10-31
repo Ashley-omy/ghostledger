@@ -1,0 +1,27 @@
+{
+  "name": "@ghostledger/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "GhostLedger business logic: schemas, extraction, ledger, insights and LLM providers. Runs on the device.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./ledger/sqlite": "./src/ledger/sqlite.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@google/genai": "^2.32.0",
+    "@huggingface/transformers": "^4.3.2",
+    "@sqlite.org/sqlite-wasm": "^3.54.1-build1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}
