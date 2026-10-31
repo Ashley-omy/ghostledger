@@ -1,17 +1,26 @@
 /// <reference lib="webworker" />
 /**
  * Runs Gemma 4 E2B on the device with Transformers.js (WebGPU, WASM fallback).
- * Lives in a Web Worker so inference never blocks the UI.
+ * Lives in a Web Worker so downloading and inference never block the UI.
+ *
+ * Downloading and loading are separate steps:
+ *  1. download: resumable, streamed to OPFS (model/download.ts). Low memory, survives restarts.
+ *  2. load: Transformers.js reads the files from OPFS through OpfsModelCache, with remote access off,
+ *     so it works fully offline and never downloads anything itself.
  * API follows the onnx-community/gemma-4-E2B-it-ONNX model card.
  */
 import {
   AutoProcessor,
+  env,
   Gemma4ForConditionalGeneration,
   InterruptableStoppingCriteria,
   RawImage,
   TextStreamer,
 } from '@huggingface/transformers';
-import type { FromWorker, LoadOptions, ToWorker } from './local.protocol';
+import { DownloadError, downloadModel } from '../model/download';
+import { fetchManifest } from '../model/files';
+import { getModelStatus, OpfsModelCache, OpfsModelStore } from '../model/opfs';
+import type { FromWorker, LoadOptions, ModelProgress, ToWorker } from './local.protocol';
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -21,23 +30,87 @@ type Loaded = { key: string; processor: any; model: any };
 let loaded: Loaded | null = null;
 let loading: Promise<Loaded> | null = null;
 const stops = new Map<number, InterruptableStoppingCriteria>();
+const aborts = new Map<number, AbortController>();
 
 const post = (msg: FromWorker) => self.postMessage(msg);
+const progress = (id: number, p: ModelProgress) => post({ type: 'progress', id, progress: p });
+
+class WorkerError extends Error {
+  constructor(
+    readonly code: Extract<FromWorker, { type: 'error' }>['code'],
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+const GB = 1024 ** 3;
+
+async function ensureSpace(bytesNeeded: number) {
+  const { usage = 0, quota = 0 } = (await navigator.storage?.estimate?.()) ?? {};
+  if (!quota) return;
+  const free = quota - usage;
+  // ~5 % headroom for the ledger, ONNX Runtime and the browser's own bookkeeping.
+  if (free < bytesNeeded * 1.05) {
+    throw new WorkerError(
+      'DOWNLOAD_FAILED',
+      `Not enough storage: the model needs ${(bytesNeeded / GB).toFixed(1)} GB, but only ${(free / GB).toFixed(1)} GB is available to this app.`,
+    );
+  }
+}
+
+async function download(id: number, opts: LoadOptions) {
+  const ctrl = new AbortController();
+  aborts.set(id, ctrl);
+  try {
+    await downloadModel(
+      new OpfsModelStore(opts.modelId, opts.dtype),
+      async () => {
+        const manifest = await fetchManifest(opts.modelId, opts.dtype);
+        await ensureSpace(manifest.totalBytes);
+        return manifest;
+      },
+      {
+        signal: ctrl.signal,
+        onProgress: (p) => progress(id, { phase: 'download', ...p }),
+      },
+    );
+  } catch (err) {
+    if (err instanceof DownloadError) throw new WorkerError('DOWNLOAD_FAILED', err.message);
+    if (err instanceof TypeError) {
+      // fetchManifest failed: no connection while starting a fresh download
+      throw new WorkerError('DOWNLOAD_FAILED', 'Could not reach Hugging Face. Check the connection and try again.');
+    }
+    throw err;
+  } finally {
+    aborts.delete(id);
+  }
+}
 
 async function load(id: number, opts: LoadOptions): Promise<Loaded> {
   const key = `${opts.modelId}|${opts.device}|${opts.dtype}`;
   if (loaded?.key === key) return loaded;
   if (!loading) {
     loading = (async () => {
+      const status = await getModelStatus(opts.modelId, opts.dtype);
+      if (status.state !== 'complete') throw new WorkerError('MODEL_NOT_DOWNLOADED', 'Download the offline model in Settings first.');
+
+      // Read model files only from OPFS; never download from inside Transformers.js.
+      env.allowRemoteModels = false;
+      env.allowLocalModels = false;
+      env.useBrowserCache = false;
+      env.useCustomCache = true;
+      env.customCache = new OpfsModelCache(opts.modelId, opts.dtype) as any;
+
       const progress_callback = (info: any) => {
-        post({
-          type: 'progress',
-          id,
-          progress: {
-            status: String(info.status ?? ''),
-            file: info.file,
-            percent: info.status === 'progress_total' && typeof info.progress === 'number' ? info.progress : null,
-          },
+        if (info.status !== 'progress_total') return;
+        progress(id, {
+          phase: 'load',
+          status: 'loading',
+          loaded: info.loaded ?? 0,
+          total: info.total ?? 0,
+          percent: typeof info.progress === 'number' ? info.progress : null,
+          file: null,
         });
       };
       const processor = await AutoProcessor.from_pretrained(opts.modelId, { progress_callback });
@@ -104,15 +177,18 @@ async function analyze(id: number, opts: LoadOptions, system: string, user: stri
 self.onmessage = async ({ data }: MessageEvent<ToWorker>) => {
   if (data.type === 'abort') {
     stops.get(data.id)?.interrupt();
+    aborts.get(data.id)?.abort();
     return;
   }
   try {
     let text = '';
+    if (data.type === 'download') await download(data.id, data.options);
     if (data.type === 'load') await load(data.id, data.options);
     if (data.type === 'extract') text = await extract(data.id, data.options, data.image, data.prompt);
     if (data.type === 'analyze') text = await analyze(data.id, data.options, data.system, data.user);
     post({ type: 'done', id: data.id, text });
   } catch (err) {
-    post({ type: 'error', id: data.id, message: err instanceof Error ? err.message : String(err) });
+    const code = err instanceof WorkerError ? err.code : 'INTERNAL';
+    post({ type: 'error', id: data.id, code, message: err instanceof Error ? err.message : String(err) });
   }
 };

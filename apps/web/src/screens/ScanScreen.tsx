@@ -15,12 +15,12 @@ import { useOnline } from '../lib/hooks';
 
 type State =
   | { step: 'idle' }
-  | { step: 'working'; provider: LLMProvider; preview: string; startedAt: number }
+  | { step: 'working'; provider: LLMProvider; preview: string; status: string | null; startedAt: number }
   | { step: 'review'; result: ExtractionResult | null }
   | { step: 'error'; error: unknown; photo: File };
 
 export function ScanScreen({ goToSettings }: { goToSettings: () => void }) {
-  const { ledger, providers, settings, modelReady } = useApp();
+  const { ledger, providers, settings, modelReady, download } = useApp();
   const isOnline = useOnline();
   const [mode, setMode] = useState<Mode>(settings.defaultMode);
   const [state, setState] = useState<State>({ step: 'idle' });
@@ -32,11 +32,12 @@ export function ScanScreen({ goToSettings }: { goToSettings: () => void }) {
     abort.current = new AbortController();
     try {
       const { provider, fallback } = await selectProvider(providers, requested);
-      setState({ step: 'working', provider, preview: '', startedAt: Date.now() });
+      setState({ step: 'working', provider, preview: '', status: null, startedAt: Date.now() });
       const result = await extractReceipt(photo, provider, {
         fallback,
         signal: abort.current.signal,
-        onToken: (t) => setState((s) => (s.step === 'working' ? { ...s, preview: s.preview + t } : s)),
+        onToken: (t) => setState((s) => (s.step === 'working' ? { ...s, status: null, preview: s.preview + t } : s)),
+        onStatus: (status) => setState((s) => (s.step === 'working' ? { ...s, status } : s)),
       });
       setState({ step: 'review', result });
     } catch (error) {
@@ -76,11 +77,31 @@ export function ScanScreen({ goToSettings }: { goToSettings: () => void }) {
 
       {!modelReady && (
         <div className="banner">
-          The offline model isn't downloaded yet.{' '}
-          <button className="link" onClick={goToSettings}>
-            Download it in Settings
-          </button>{' '}
-          (Wi-Fi recommended), or enter receipts manually.
+          {download.running ? (
+            <>
+              Downloading the offline model
+              {download.progress?.total ? ` · ${((download.progress.loaded / download.progress.total) * 100).toFixed(0)}%` : '…'}{' '}
+              <button className="link" onClick={goToSettings}>
+                Details
+              </button>
+            </>
+          ) : download.status.state === 'partial' ? (
+            <>
+              The offline model download is paused at{' '}
+              {download.status.total ? ((download.status.loaded / download.status.total) * 100).toFixed(0) : 0}%.{' '}
+              <button className="link" onClick={download.start}>
+                Resume
+              </button>
+            </>
+          ) : (
+            <>
+              The offline model isn't downloaded yet.{' '}
+              <button className="link" onClick={goToSettings}>
+                Download it in Settings
+              </button>{' '}
+              (Wi-Fi recommended), or enter receipts manually.
+            </>
+          )}
         </div>
       )}
 
@@ -98,7 +119,11 @@ export function ScanScreen({ goToSettings }: { goToSettings: () => void }) {
         <div className="working">
           <div className="spinner" aria-hidden />
           <p>
-            Reading the receipt with <b>{state.provider.extractModel}</b>… This can take a minute on a phone.
+            {state.status ?? (
+              <>
+                Reading the receipt with <b>{state.provider.extractModel}</b>… This can take a minute on a phone.
+              </>
+            )}
           </p>
           {state.preview && <pre className="stream">{state.preview}</pre>}
           <button className="secondary" onClick={() => abort.current?.abort()}>

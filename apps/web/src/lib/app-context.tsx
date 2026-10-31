@@ -12,6 +12,7 @@ import {
 } from '@ghostledger/core';
 import { createSqliteLedger } from '@ghostledger/core/ledger/sqlite';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useModelDownload, type ModelDownload } from './model-download';
 import { loadSettings, saveSettings, type Settings } from './settings';
 
 interface AppServices {
@@ -22,9 +23,10 @@ interface AppServices {
   providers: Providers;
   settings: Settings;
   updateSettings: (patch: Partial<Settings>) => void;
-  /** Whether the offline model is downloaded. Call refreshModelStatus() after download/delete. */
+  /** Whether the offline model is fully downloaded */
   modelReady: boolean;
-  refreshModelStatus: () => Promise<void>;
+  /** Resumable model download (start / pause / progress), shared by every screen */
+  download: ModelDownload;
 }
 
 const Ctx = createContext<AppServices | null>(null);
@@ -35,7 +37,6 @@ const ledger = createSqliteLedger();
 export function AppProvider({ children }: { children: ReactNode }) {
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [settings, setSettings] = useState(loadSettings);
-  const [modelReady, setModelReady] = useState(false);
 
   useEffect(() => {
     detectCapabilities().then(setCaps);
@@ -51,13 +52,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [settings.geminiApiKey, settings.geminiProxyUrl],
   );
 
-  const refreshModelStatus = useCallback(async () => {
-    setModelReady(local ? await local.isDownloaded() : false);
-  }, [local]);
-
-  useEffect(() => {
-    void refreshModelStatus();
-  }, [refreshModelStatus]);
+  const download = useModelDownload(local);
 
   const updateSettings = useCallback((patch: Partial<Settings>) => {
     setSettings((prev) => {
@@ -77,8 +72,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     providers: { offline: local, online },
     settings,
     updateSettings,
-    modelReady,
-    refreshModelStatus,
+    modelReady: download.status.state === 'complete',
+    download,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

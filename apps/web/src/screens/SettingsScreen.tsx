@@ -1,74 +1,19 @@
 /** Offline model download, device capabilities, storage and Online mode settings. */
-import { requestPersistentStorage, toUserMessage, type DownloadProgress, type Mode } from '@ghostledger/core';
-import { useRef, useState } from 'react';
+import { requestPersistentStorage, type Mode } from '@ghostledger/core';
+import { useState } from 'react';
+import { ModelCard } from '../components/ModelCard';
 import { useApp } from '../lib/app-context';
 import { formatBytes } from '../lib/files';
 
 export function SettingsScreen() {
-  const { caps, local, settings, updateSettings, modelReady, refreshModelStatus } = useApp();
-  const [progress, setProgress] = useState<DownloadProgress | null>(null);
-  const [downloading, setDownloading] = useState(false);
+  const { caps, settings, updateSettings } = useApp();
   const [persisted, setPersisted] = useState(caps.storage?.persisted ?? false);
-  const [error, setError] = useState<string | null>(null);
-  const abort = useRef<AbortController | null>(null);
-
-  const download = async () => {
-    setError(null);
-    setDownloading(true);
-    abort.current = new AbortController();
-    try {
-      setPersisted(await requestPersistentStorage());
-      await local.download((p) => setProgress((prev) => ({ ...p, percent: p.percent ?? prev?.percent ?? null })), abort.current.signal);
-      await refreshModelStatus();
-    } catch (err) {
-      if ((err as DOMException)?.name !== 'AbortError') setError(toUserMessage(err));
-    } finally {
-      setDownloading(false);
-      setProgress(null);
-    }
-  };
-
-  const remove = async () => {
-    if (!confirm('Delete the offline model? Your receipts are kept.')) return;
-    await local.deleteModel();
-    await refreshModelStatus();
-  };
-
-  const { runtime } = local;
 
   return (
     <section>
       <h2>Settings</h2>
 
-      <div className="card">
-        <h3>📴 Offline model</h3>
-        <p>
-          Gemma 4 E2B · <code>{runtime.dtype}</code> on <code>{runtime.device}</code>
-          {runtime.device === 'wasm' && ' (no WebGPU — this will be slow)'}
-        </p>
-        <p>Status: {modelReady ? '✅ Ready offline' : 'Not downloaded'}</p>
-        {downloading ? (
-          <>
-            <progress max={100} value={progress?.percent ?? undefined} />
-            <p className="muted">
-              {progress?.percent != null ? `${progress.percent.toFixed(0)}%` : 'Starting…'} {progress?.file ?? ''}
-            </p>
-            <button className="secondary" onClick={() => abort.current?.abort()}>
-              Cancel
-            </button>
-          </>
-        ) : modelReady ? (
-          <button className="danger" onClick={remove}>
-            Delete model
-          </button>
-        ) : (
-          <>
-            <p className="muted">Download is a few GB. Use Wi-Fi. You only need to do this once.</p>
-            <button onClick={download}>Download offline model</button>
-          </>
-        )}
-        {error && <p className="error">{error}</p>}
-      </div>
+      <ModelCard />
 
       <div className="card">
         <h3>Default mode</h3>

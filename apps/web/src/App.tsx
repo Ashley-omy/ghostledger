@@ -19,14 +19,19 @@ const TABS: { id: Tab; label: string; icon: string }[] = [
 export function App() {
   const [tab, setTab] = useState<Tab>('scan');
   const online = useOnline();
-  const { modelReady } = useApp();
+  const { modelReady, download } = useApp();
+  const modelLabel = modelReady
+    ? 'model ready'
+    : download.running && download.progress?.total
+      ? `model ${((download.progress.loaded / download.progress.total) * 100).toFixed(0)}%`
+      : 'no model';
 
   return (
     <div className="app">
       <header>
         <h1>👻 GhostLedger</h1>
         <span className={online ? 'pill' : 'pill offline'}>
-          {online ? 'Online' : 'Offline'} · {modelReady ? 'model ready' : 'no model'}
+          {online ? 'Online' : 'Offline'} · {modelLabel}
         </span>
       </header>
 

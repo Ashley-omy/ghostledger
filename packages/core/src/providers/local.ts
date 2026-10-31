@@ -3,13 +3,13 @@
  * If the browser can't handle it, only this file changes: e.g. a Capacitor plugin
  * calling LiteRT-LM or llama.cpp (docs/ARCHITECTURE.md §10).
  */
-import { AppError } from '../errors';
-import type { DownloadProgress, FromWorker, LoadOptions, ToWorker, WorkerRequest } from './local.protocol';
+import { AppError, type ErrorCode } from '../errors';
+import type { ModelDtype } from '../model/files';
+import { deleteModelFiles, getModelStatus, type ModelStatus } from '../model/opfs';
+import type { FromWorker, LoadOptions, ModelProgress, ToWorker, WorkerRequest } from './local.protocol';
 import type { Availability, GenerateOptions, LLMProvider } from './types';
 
 export const LOCAL_MODEL_ID = 'onnx-community/gemma-4-E2B-it-ONNX';
-const READY_KEY = 'ghostledger.localModelReady';
-const TRANSFORMERS_CACHE = 'transformers-cache';
 
 export interface LocalProviderOptions {
   modelId?: string;
@@ -27,15 +27,13 @@ export class LocalProvider implements LLMProvider {
   private worker: Worker | null = null;
   private nextId = 1;
   private readonly load: LoadOptions;
+  private downloading: Promise<void> | null = null;
 
   constructor(opts: LocalProviderOptions) {
     const modelId = opts.modelId ?? LOCAL_MODEL_ID;
     this.extractModel = this.insightModel = modelId;
-    this.load = {
-      modelId,
-      device: opts.webgpu ? 'webgpu' : 'wasm',
-      dtype: opts.webgpu && opts.shaderF16 ? 'q4f16' : 'q4',
-    };
+    const dtype: ModelDtype = opts.webgpu && opts.shaderF16 ? 'q4f16' : 'q4';
+    this.load = { modelId, device: opts.webgpu ? 'webgpu' : 'wasm', dtype };
   }
 
   get runtime(): LoadOptions {
@@ -47,44 +45,55 @@ export class LocalProvider implements LLMProvider {
     return { ok: true, reason: null };
   }
 
-  /** True when the model finished loading once and its files are still in the browser cache. */
-  async isDownloaded(): Promise<boolean> {
-    if (localStorage.getItem(READY_KEY) !== this.load.modelId) return false;
-    try {
-      const cache = await caches.open(TRANSFORMERS_CACHE);
-      const keys = await cache.keys();
-      return keys.some((req) => req.url.includes(this.load.modelId));
-    } catch {
-      return false;
-    }
+  /** How much of the model is on disk (none / partial / complete). */
+  status(): Promise<ModelStatus> {
+    return getModelStatus(this.load.modelId, this.load.dtype);
   }
 
-  /** Downloads (or loads from cache) and warms up the model. Call from the Settings / onboarding screen. */
-  async download(onProgress?: (p: DownloadProgress) => void, signal?: AbortSignal): Promise<void> {
-    await this.call({ type: 'load', options: this.load }, { signal }, onProgress);
-    localStorage.setItem(READY_KEY, this.load.modelId);
+  async isDownloaded(): Promise<boolean> {
+    return (await this.status()).state === 'complete';
+  }
+
+  /**
+   * Starts or resumes the download. Safe to call again after a crash, reload or pause:
+   * it continues from the last byte on disk. Concurrent calls share one download.
+   */
+  download(onProgress?: (p: ModelProgress) => void, signal?: AbortSignal): Promise<void> {
+    this.downloading ??= this.call({ type: 'download', options: this.load }, { signal }, onProgress)
+      .then(() => undefined)
+      .finally(() => {
+        this.downloading = null;
+      });
+    return this.downloading;
+  }
+
+  /** Loads the model into memory / GPU. Useful to test whether the phone has enough memory. */
+  async warmUp(onProgress?: (p: ModelProgress) => void): Promise<void> {
+    await this.call({ type: 'load', options: this.load }, {}, onProgress);
   }
 
   /** Deletes the model files. The ledger is not touched. */
   async deleteModel(): Promise<void> {
-    this.worker?.terminate();
+    this.worker?.terminate(); // releases OPFS file locks held by a running download
     this.worker = null;
-    localStorage.removeItem(READY_KEY);
-    const cache = await caches.open(TRANSFORMERS_CACHE);
-    for (const req of await cache.keys()) {
-      if (req.url.includes(this.load.modelId)) await cache.delete(req);
-    }
+    this.downloading = null;
+    await deleteModelFiles(this.load.modelId);
   }
 
   async extract(image: Blob, prompt: string, opts?: GenerateOptions): Promise<string> {
     await this.ensureDownloaded();
-    return this.call({ type: 'extract', options: this.load, image, prompt }, opts);
+    return this.call({ type: 'extract', options: this.load, image, prompt }, opts, this.loadStatus(opts));
   }
 
   async analyze(system: string, payload: object, opts?: GenerateOptions): Promise<string> {
     await this.ensureDownloaded();
     const user = `Spending data:\n${JSON.stringify(payload)}`;
-    return this.call({ type: 'analyze', options: this.load, system, user }, opts);
+    return this.call({ type: 'analyze', options: this.load, system, user }, opts, this.loadStatus(opts));
+  }
+
+  private loadStatus(opts?: GenerateOptions) {
+    return (p: ModelProgress) =>
+      opts?.onStatus?.(`Loading the model into memory…${p.percent != null ? ` ${p.percent.toFixed(0)}%` : ''}`);
   }
 
   private async ensureDownloaded() {
@@ -96,11 +105,7 @@ export class LocalProvider implements LLMProvider {
     return this.worker;
   }
 
-  private call(
-    msg: WorkerRequest,
-    opts: GenerateOptions = {},
-    onProgress?: (p: DownloadProgress) => void,
-  ): Promise<string> {
+  private call(msg: WorkerRequest, opts: GenerateOptions = {}, onProgress?: (p: ModelProgress) => void): Promise<string> {
     const worker = this.getWorker();
     const id = this.nextId++;
     return new Promise<string>((resolve, reject) => {
@@ -118,16 +123,25 @@ export class LocalProvider implements LLMProvider {
           resolve(data.text);
         } else if (data.type === 'error') {
           cleanup();
-          reject(new AppError('INTERNAL', `On-device model error: ${data.message}`));
+          const code: ErrorCode = data.code;
+          reject(new AppError(code, code === 'INTERNAL' ? `On-device model error: ${data.message}` : data.message));
         }
+      };
+      // The worker itself crashed (e.g. out of memory while loading the model).
+      const onError = (e: ErrorEvent) => {
+        cleanup();
+        this.worker = null;
+        reject(new AppError('INTERNAL', `The on-device model stopped unexpectedly${e.message ? `: ${e.message}` : ''}.`));
       };
       const cleanup = () => {
         worker.removeEventListener('message', onMessage);
+        worker.removeEventListener('error', onError);
         opts.signal?.removeEventListener('abort', onAbort);
       };
       if (opts.signal?.aborted) return onAbort();
       opts.signal?.addEventListener('abort', onAbort);
       worker.addEventListener('message', onMessage);
+      worker.addEventListener('error', onError);
       worker.postMessage({ ...msg, id } as ToWorker);
     });
   }

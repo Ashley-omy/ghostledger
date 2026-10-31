@@ -134,14 +134,24 @@ sequenceDiagram
   participant HF as Model host (HF / our CDN)
   U->>App: Open URL (online)
   App->>SW: Register, precache app shell
-  App->>U: "Install GhostLedger" + "Download offline model (~2–3 GB, Wi-Fi)"
+  App->>U: "Install GhostLedger" + "Download offline model (~3.2 GB, Wi-Fi)"
   U->>App: Download
-  App->>App: navigator.storage.persist()
-  App->>HF: Fetch ONNX shards (resumable)
-  HF-->>App: Shards → Cache API / OPFS
+  App->>App: navigator.storage.persist() + screen wake lock
+  App->>HF: File list, pinned to one commit sha
+  loop each file, resumable
+    App->>HF: GET … Range: bytes=<bytes on disk>-
+    HF-->>App: 206 stream → written straight to OPFS
+  end
   App->>U: ✅ Ready offline
 ```
 
+- **The download is resumable** (`packages/core/src/model/`). Transformers.js on its own holds each file in memory (the largest is ~1.6 GB) and saves nothing until the file is complete. On a phone that gets the tab killed and starts over. Instead:
+  - a worker streams every file straight to OPFS with HTTP `Range` requests, so memory stays at a few MB;
+  - the download is pinned to the repo's commit sha, so a resume never mixes two versions;
+  - network errors are retried with backoff;
+  - after a reload, crash or pause, it continues from the last byte. It also restarts automatically when the app is reopened, comes back to the foreground, or gets its connection back.
+- **Loading is a separate step.** Transformers.js reads the files from OPFS through a custom cache (`OpfsModelCache`), with remote downloads turned off, so loading works fully offline.
+  - Settings → "Test: load into memory" checks whether the phone has enough RAM for the model. If the app restarts during this step, it's a memory problem, not a download problem.
 - Until the model is downloaded, the user can still add expenses manually, or use Online mode if they've enabled it.
 - Show the storage used and offer a "Delete model" button in Settings.
 

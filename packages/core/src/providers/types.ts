@@ -10,6 +10,8 @@ export interface GenerateOptions {
   signal?: AbortSignal;
   /** Streamed text, for a live preview while the model works. */
   onToken?: (text: string) => void;
+  /** Human-readable status before tokens arrive, e.g. "Loading model into memory… 40%". */
+  onStatus?: (status: string) => void;
 }
 
 /**

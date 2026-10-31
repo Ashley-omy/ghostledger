@@ -7,6 +7,7 @@ export type ErrorCode =
   | 'EXTRACTION_FAILED'
   | 'MODE_UNAVAILABLE'
   | 'MODEL_NOT_DOWNLOADED'
+  | 'DOWNLOAD_FAILED'
   | 'INTERNAL';
 
 const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
@@ -17,6 +18,7 @@ const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
   EXTRACTION_FAILED: 'Could not read a receipt from this image. Try a sharper photo.',
   MODE_UNAVAILABLE: 'Neither Offline nor Online mode can be used right now.',
   MODEL_NOT_DOWNLOADED: 'Download the offline model in Settings first.',
+  DOWNLOAD_FAILED: 'The model download stopped. It will continue from where it left off.',
   INTERNAL: 'Something went wrong.',
 };
 

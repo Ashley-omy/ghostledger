@@ -21,3 +21,6 @@ dev-dist/
 *.tsbuildinfo
 .vite/
 coverage/
+
+# macOS
+.DS_Store
