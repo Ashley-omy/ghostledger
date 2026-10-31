@@ -1,15 +1,16 @@
-/** Offline model: download / pause / resume, progress, memory test and delete. */
+/** Offline model: download / pause / resume (resumable), progress, memory test and delete. */
 import { toUserMessage, type ModelProgress } from '@ghostledger/core';
 import { useState } from 'react';
 import { useApp } from '../lib/app-context';
 import { formatBytes } from '../lib/files';
+import { Avatar, Icon } from './Icon';
+
+type Test = { state: 'idle' | 'loading' | 'ok' | 'error'; text?: string; percent?: number | null };
 
 export function ModelCard() {
   const { local, download, modelReady } = useApp();
   const { status, running, progress, error } = download;
-  const [test, setTest] = useState<{ state: 'idle' | 'loading' | 'ok' | 'error'; text?: string; percent?: number | null }>({
-    state: 'idle',
-  });
+  const [test, setTest] = useState<Test>({ state: 'idle' });
 
   const { runtime } = local;
   const total = progress?.total || status.total;
@@ -22,98 +23,130 @@ export function ModelCard() {
     const started = performance.now();
     try {
       await local.warmUp((p: ModelProgress) => setTest({ state: 'loading', percent: p.percent }));
-      setTest({ state: 'ok', text: `Loaded in ${((performance.now() - started) / 1000).toFixed(0)} s.` });
+      setTest({ state: 'ok', text: `Loaded in ${((performance.now() - started) / 1000).toFixed(0)} s` });
     } catch (err) {
       setTest({ state: 'error', text: toUserMessage(err) });
     }
   };
 
   return (
-    <div className="card">
-      <h3>📴 Offline model</h3>
-      <p>
-        Gemma 4 E2B · <code>{runtime.dtype}</code> on <code>{runtime.device}</code>
-        {runtime.device === 'wasm' && ' (no WebGPU — this will be slow)'}
-      </p>
+    <>
+      <h2 className="day-title">Offline model</h2>
+      <ul className="rows card">
+        <li className="row">
+          <Avatar name="phone" tone={modelReady ? 'mint' : 'neutral'} />
+          <span className="row-text">
+            <b>Gemma 4 E2B</b>
+            <small>
+              {runtime.device === 'wasm' ? 'No GPU support here, so it will be slow' : 'Runs on this phone’s GPU'} ·{' '}
+              {runtime.dtype}
+            </small>
+          </span>
+          <span className={modelReady ? 'yes' : 'muted'}>
+            {modelReady ? 'Ready' : running ? `${percent.toFixed(0)}%` : status.state === 'partial' ? 'Paused' : 'Not downloaded'}
+          </span>
+        </li>
 
-      {modelReady && (
-        <>
-          <p>✅ Ready offline · {formatBytes(status.total)}</p>
-          <div className="actions">
-            <button className="secondary" onClick={runTest} disabled={test.state === 'loading'}>
-              Test: load into memory
+        {/* Downloading */}
+        {!modelReady && running && (
+          <li className="row stack">
+            <progress max={100} value={preparing ? undefined : percent} />
+            <span className="split">
+              <small className="muted">
+                {preparing ? 'Preparing…' : `${formatBytes(loaded)} of ${formatBytes(total)}`}
+              </small>
+              <button className="text-button" onClick={download.pause}>
+                Pause
+              </button>
+            </span>
+            {progress?.status === 'retrying' && (
+              <small className="muted">
+                Connection lost{progress.lastError ? ` (${progress.lastError})` : ''}. Retrying in{' '}
+                {Math.round((progress.retryInMs ?? 0) / 1000)} s…
+              </small>
+            )}
+            <small className="muted">
+              Keep GhostLedger open; the screen stays on. If the app closes, the download continues from here.
+            </small>
+          </li>
+        )}
+
+        {/* Paused / interrupted */}
+        {!modelReady && !running && status.state === 'partial' && (
+          <>
+            <li className="row stack">
+              <progress max={100} value={percent} />
+              <small className="muted">
+                Paused at {formatBytes(status.loaded)} of {formatBytes(status.total)}
+              </small>
+            </li>
+            <li>
+              <button className="row" onClick={download.start}>
+                <Avatar name="download" tone="mint" />
+                <span className="row-text">
+                  <b>Resume download</b>
+                  <small>Continues where it stopped</small>
+                </span>
+                <Icon name="chevronRight" size={18} />
+              </button>
+            </li>
+            <li>
+              <button className="row danger-text" onClick={() => confirm('Delete the partial download?') && download.remove()}>
+                Delete partial download
+              </button>
+            </li>
+          </>
+        )}
+
+        {/* Not downloaded */}
+        {!modelReady && !running && status.state === 'none' && (
+          <li>
+            <button className="row" onClick={download.start}>
+              <Avatar name="download" tone="mint" />
+              <span className="row-text">
+                <b>Download</b>
+                <small>About 3 GB, once. Use Wi-Fi. Can be paused and resumed.</small>
+              </span>
+              <Icon name="chevronRight" size={18} />
             </button>
-            <button
-              className="danger"
-              onClick={() => confirm('Delete the offline model? Your receipts are kept.') && download.remove()}
-            >
-              Delete model
-            </button>
-          </div>
-          {test.state === 'loading' && (
-            <>
-              <progress max={100} value={test.percent ?? undefined} />
-              <p className="muted">
-                Loading the model into memory{test.percent != null ? ` · ${test.percent.toFixed(0)}%` : '…'} If the app
-                restarts during this step, the phone doesn't have enough memory for the model. The download is kept.
-              </p>
-            </>
-          )}
-          {test.state === 'ok' && <p className="success">✅ {test.text}</p>}
-          {test.state === 'error' && <p className="error">{test.text}</p>}
-        </>
-      )}
+          </li>
+        )}
 
-      {!modelReady && running && (
-        <>
-          <progress max={100} value={preparing ? undefined : percent} />
-          <p>
-            {preparing
-              ? 'Preparing…'
-              : `${formatBytes(loaded)} of ${formatBytes(total)} · ${percent.toFixed(0)}%`}
-          </p>
-          {progress?.status === 'retrying' && (
-            <p className="muted">
-              Download interrupted{progress.lastError ? ` (${progress.lastError})` : ''}. Retrying in{' '}
-              {Math.round((progress.retryInMs ?? 0) / 1000)} s…
-            </p>
-          )}
-          <p className="muted">
-            Keep GhostLedger open. The screen stays on while downloading. If the app closes, the download continues
-            from {formatBytes(loaded)} when you open it again.
-          </p>
-          <button className="secondary" onClick={download.pause}>
-            Pause
-          </button>
-        </>
-      )}
-
-      {!modelReady && !running && status.state === 'partial' && (
-        <>
-          <progress max={100} value={percent} />
-          <p>
-            Paused at {formatBytes(status.loaded)} of {formatBytes(status.total)} · {percent.toFixed(0)}%
-          </p>
-          <div className="actions">
-            <button className="danger" onClick={() => confirm('Delete the partial download?') && download.remove()}>
-              Delete
-            </button>
-            <button onClick={download.start}>Resume download</button>
-          </div>
-        </>
-      )}
-
-      {!modelReady && !running && status.state === 'none' && (
-        <>
-          <p className="muted">
-            About 3.4 GB. Use Wi-Fi. The download can be paused and continues where it stopped, even after the app
-            closes.
-          </p>
-          <button onClick={download.start}>Download offline model</button>
-        </>
-      )}
-
-      {error && <p className="error">{error}</p>}
-    </div>
+        {/* Ready */}
+        {modelReady && (
+          <>
+            <li>
+              <button className="row" onClick={runTest} disabled={test.state === 'loading'}>
+                <Avatar name="check" />
+                <span className="row-text">
+                  <b>Test: load into memory</b>
+                  <small>
+                    {test.state === 'loading'
+                      ? `Loading${test.percent != null ? ` · ${test.percent.toFixed(0)}%` : '…'} If the app restarts now, the phone ran out of memory.`
+                      : test.state === 'ok'
+                        ? test.text
+                        : 'Checks that this phone has enough memory'}
+                  </small>
+                </span>
+              </button>
+            </li>
+            <li className="row">
+              <span className="row-text">Size on this phone</span>
+              <span className="muted">{formatBytes(status.total)}</span>
+            </li>
+            <li>
+              <button
+                className="row danger-text"
+                onClick={() => confirm('Delete the offline model? Your receipts are kept.') && download.remove()}
+              >
+                Delete model
+              </button>
+            </li>
+          </>
+        )}
+      </ul>
+      {test.state === 'error' && <p className="error-text">{test.text}</p>}
+      {error && <p className="error-text">{error}</p>}
+    </>
   );
 }

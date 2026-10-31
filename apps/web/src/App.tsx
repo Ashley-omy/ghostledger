@@ -1,4 +1,6 @@
+import type { Receipt } from '@ghostledger/core';
 import { useState } from 'react';
+import { Icon, type IconName } from './components/Icon';
 import { UpdatePrompt } from './components/UpdatePrompt';
 import { useApp } from './lib/app-context';
 import { useOnline } from './lib/hooks';
@@ -9,43 +11,72 @@ import { SettingsScreen } from './screens/SettingsScreen';
 
 type Tab = 'scan' | 'ledger' | 'insights' | 'settings';
 
-const TABS: { id: Tab; label: string; icon: string }[] = [
-  { id: 'scan', label: 'Scan', icon: '📸' },
-  { id: 'ledger', label: 'Ledger', icon: '🧾' },
-  { id: 'insights', label: 'Insights', icon: '📊' },
-  { id: 'settings', label: 'Settings', icon: '⚙️' },
+const TABS: { id: Tab; label: string; icon: IconName }[] = [
+  { id: 'ledger', label: 'Home', icon: 'receipt' },
+  { id: 'scan', label: 'Add', icon: 'plus' },
+  { id: 'insights', label: 'Insights', icon: 'chart' },
+  { id: 'settings', label: 'Settings', icon: 'gear' },
 ];
 
 export function App() {
-  const [tab, setTab] = useState<Tab>('scan');
+  const [tab, setTab] = useState<Tab>('ledger');
+  // The receipt just saved on Scan: the Ledger opens on its month (not necessarily the current one).
+  const [justSaved, setJustSaved] = useState<Receipt | null>(null);
   const online = useOnline();
-  const { modelReady, download } = useApp();
-  const modelLabel = modelReady
-    ? 'model ready'
-    : download.running && download.progress?.total
-      ? `model ${((download.progress.loaded / download.progress.total) * 100).toFixed(0)}%`
-      : 'no model';
+  const { modelReady, settings, download } = useApp();
+
+  // The badge shows the current mode (chosen on Add / Insights / Settings) and whether it can run right now.
+  // While the offline model downloads, it shows the progress instead.
+  const downloading = !modelReady && download.running && download.progress?.total;
+  const badge =
+    settings.defaultMode === 'online'
+      ? { icon: 'cloud' as const, text: online ? 'Gemini' : 'Gemini · no internet', cls: 'chip' }
+      : modelReady
+        ? { icon: 'lock' as const, text: 'On this phone', cls: 'chip mint' }
+        : downloading
+          ? {
+              icon: 'download' as const,
+              text: `Model ${((download.progress!.loaded / download.progress!.total) * 100).toFixed(0)}%`,
+              cls: 'chip',
+            }
+          : { icon: 'alert' as const, text: 'On this phone · no model', cls: 'chip' };
 
   return (
     <div className="app">
-      <header>
-        <h1>👻 GhostLedger</h1>
-        <span className={online ? 'pill' : 'pill offline'}>
-          {online ? 'Online' : 'Offline'} · {modelLabel}
+      <header className="topbar">
+        <span className="brand">GhostLedger</span>
+        <span className={badge.cls}>
+          <Icon name={badge.icon} size={14} />
+          {badge.text}
         </span>
       </header>
 
       <main>
-        {tab === 'scan' && <ScanScreen goToSettings={() => setTab('settings')} />}
-        {tab === 'ledger' && <LedgerScreen />}
+        {tab === 'scan' && (
+          <ScanScreen
+            goToSettings={() => setTab('settings')}
+            onSaved={(receipt) => {
+              setJustSaved(receipt);
+              setTab('ledger');
+            }}
+          />
+        )}
+        {tab === 'ledger' && <LedgerScreen justSaved={justSaved} onAdd={() => setTab('scan')} />}
         {tab === 'insights' && <InsightsScreen />}
         {tab === 'settings' && <SettingsScreen />}
       </main>
 
-      <nav>
+      <nav className="tabbar">
         {TABS.map((t) => (
-          <button key={t.id} aria-current={tab === t.id ? 'page' : undefined} onClick={() => setTab(t.id)}>
-            <span aria-hidden>{t.icon}</span>
+          <button
+            key={t.id}
+            aria-current={tab === t.id ? 'page' : undefined}
+            onClick={() => {
+              setJustSaved(null);
+              setTab(t.id);
+            }}
+          >
+            <Icon name={t.icon} size={22} />
             {t.label}
           </button>
         ))}

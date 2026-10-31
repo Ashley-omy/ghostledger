@@ -169,8 +169,10 @@ async function extract(id: number, opts: LoadOptions, image: Blob, prompt: strin
 
 async function analyze(id: number, opts: LoadOptions, system: string, user: string) {
   const { processor, model } = await load(id, opts);
+  // The Gemma 4 chat template applies `| trim` to the system content directly, so it must be a plain string.
+  // A parts array there fails with "Unknown ArrayValue filter: trim". User content may stay a parts array.
   const messages = [
-    { role: 'system', content: [{ type: 'text', text: system }] },
+    { role: 'system', content: system },
     { role: 'user', content: [{ type: 'text', text: user }] },
   ];
   const chat = processor.apply_chat_template(messages, { enable_thinking: false, add_generation_prompt: true });

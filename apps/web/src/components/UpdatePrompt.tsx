@@ -20,19 +20,22 @@ export function UpdatePrompt() {
 
   return (
     <div className="toast" role="status">
-      {needRefresh ? 'A new version of GhostLedger is available.' : 'GhostLedger is ready to work offline.'}
-      <div className="actions">
-        {needRefresh && <button onClick={() => updateServiceWorker(true)}>Reload</button>}
-        <button
-          className="secondary"
-          onClick={() => {
-            setOfflineReady(false);
-            setNeedRefresh(false);
-          }}
-        >
-          Close
+      <span>{needRefresh ? 'A new version is ready' : 'Ready to work offline'}</span>
+      {needRefresh && (
+        <button className="link" onClick={() => updateServiceWorker(true)}>
+          Update
         </button>
-      </div>
+      )}
+      <button
+        className="icon-button"
+        aria-label="Dismiss"
+        onClick={() => {
+          setOfflineReady(false);
+          setNeedRefresh(false);
+        }}
+      >
+        ×
+      </button>
     </div>
   );
 }
