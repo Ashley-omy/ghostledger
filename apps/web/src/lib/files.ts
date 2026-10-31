@@ -29,10 +29,30 @@ export function formatBytes(n: number): string {
   return `${v.toFixed(1)} ${units[i]}`;
 }
 
+/** "3,960 HUF", "12.50 EUR": amount then ISO code, like banking apps. Whole amounts drop the decimals. */
 export function formatMoney(amount: number, currency: string): string {
   try {
-    return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(amount);
+    const digits = new Intl.NumberFormat(undefined, { style: 'currency', currency }).resolvedOptions().maximumFractionDigits ?? 2;
+    const shown = Number.isInteger(amount) ? 0 : digits;
+    const n = new Intl.NumberFormat(undefined, { minimumFractionDigits: shown, maximumFractionDigits: shown }).format(amount);
+    return `${n} ${currency}`;
   } catch {
     return `${amount} ${currency}`;
   }
+}
+
+/** "Today", "Yesterday", or "Thu 29 Oct" for a YYYY-MM-DD date. */
+export function formatDayLabel(iso: string): string {
+  const day = new Date(`${iso}T00:00:00`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diff = Math.round((today.getTime() - day.getTime()) / 86_400_000);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+  return day.toLocaleDateString(undefined, {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: day.getFullYear() === today.getFullYear() ? undefined : 'numeric',
+  });
 }

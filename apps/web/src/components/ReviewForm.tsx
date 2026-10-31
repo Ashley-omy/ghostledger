@@ -11,6 +11,8 @@ import {
   type Warning,
 } from '@ghostledger/core';
 import { useMemo, useState } from 'react';
+import { formatMoney } from '../lib/files';
+import { Avatar, categoryIcon, Icon } from './Icon';
 
 interface Props {
   initial: ReceiptInput;
@@ -21,8 +23,6 @@ interface Props {
   onSave: (receipt: ReceiptInput) => Promise<void>;
   onCancel: () => void;
 }
-
-const ITEM_FIELDS = ['name', 'name_en', 'qty', 'unit_price', 'price', 'category'] as const;
 
 export function emptyReceipt(): ReceiptInput {
   return {
@@ -36,6 +36,16 @@ export function emptyReceipt(): ReceiptInput {
     source_mode: null,
   };
 }
+
+const CATEGORY_LABEL: Record<Item['category'], string> = {
+  groceries: 'Groceries',
+  dining: 'Eating out',
+  transport: 'Transport',
+  household: 'Household',
+  health: 'Health',
+  entertainment: 'Fun',
+  other: 'Other',
+};
 
 export function ReviewForm({ initial, extraWarnings = [], meta, saveLabel = 'Save', onSave, onCancel }: Props) {
   const [draft, setDraft] = useState<ReceiptInput>(initial);
@@ -77,143 +87,201 @@ export function ReviewForm({ initial, extraWarnings = [], meta, saveLabel = 'Sav
     }
   };
 
-  const cls = (warnings: Warning[]) => (warnings.length ? 'warn' : undefined);
+  const cls = (base: string, warnings: Warning[]) => (warnings.length ? `${base} warn` : base);
+  const money = (n: number) => formatMoney(n, draft.currency || 'XXX');
 
   return (
     <div className="review">
       {meta && (
-        <p className="muted">
-          Read by <b>{meta.model}</b> ({meta.mode_used}) in {(meta.elapsed_ms / 1000).toFixed(1)} s
-          {meta.fallback && ' — Online was unavailable, so Offline was used.'}
+        <p className="muted small">
+          Read {meta.mode_used === 'offline' ? 'on this phone' : 'by Gemini'} in {(meta.elapsed_ms / 1000).toFixed(0)} s
+          {meta.fallback && '. Gemini was unavailable, so this phone was used'}
         </p>
       )}
 
-      <div className="grid2">
-        <label className={cls(warnFor('store'))}>
-          Store
-          <input value={draft.store} onChange={(e) => setField('store', e.target.value)} />
-        </label>
-        <label className={cls(warnFor('date'))}>
-          Date
-          <input type="date" value={draft.date} onChange={(e) => setField('date', e.target.value)} />
-        </label>
-        <label className={cls(warnFor('currency'))}>
-          Currency
+      <div className={cls('amount-field', [...warnFor('total'), ...warnFor('currency')])}>
+        <label htmlFor="total">Total paid</label>
+        <div className="amount-input">
           <input
+            id="total"
+            type="number"
+            inputMode="decimal"
+            value={draft.total}
+            onChange={(e) => setField('total', Number(e.target.value))}
+          />
+          <input
+            className="currency"
+            aria-label="Currency"
             value={draft.currency}
             maxLength={3}
+            autoCapitalize="characters"
             onChange={(e) => setField('currency', e.target.value.toUpperCase())}
           />
+        </div>
+      </div>
+
+      <div className="form-grid">
+        <label className={cls('field', warnFor('store'))}>
+          <span>Store</span>
+          <input value={draft.store} placeholder="Where did you shop?" onChange={(e) => setField('store', e.target.value)} />
         </label>
-        <label>
-          Payment
+        <label className={cls('field', warnFor('date'))}>
+          <span>Date</span>
+          <input type="date" value={draft.date} onChange={(e) => setField('date', e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Paid with</span>
           <select
             value={draft.payment_method ?? ''}
             onChange={(e) => setField('payment_method', (e.target.value || null) as ReceiptInput['payment_method'])}
           >
-            <option value="">—</option>
+            <option value="">Not sure</option>
             <option value="cash">Cash</option>
             <option value="card">Card</option>
-            <option value="mobile">Mobile</option>
+            <option value="mobile">Phone</option>
             <option value="other">Other</option>
           </select>
         </label>
-        <label className={cls(warnFor('total'))}>
-          Total
-          <input type="number" inputMode="decimal" value={draft.total} onChange={(e) => setField('total', Number(e.target.value))} />
-        </label>
-        <label className={cls(warnFor('tax_amount'))}>
-          Tax amount
+        <label className={cls('field', warnFor('tax_amount'))}>
+          <span>Tax included</span>
           <input
             type="number"
             inputMode="decimal"
+            placeholder="Optional"
             value={draft.tax_amount ?? ''}
             onChange={(e) => setField('tax_amount', num(e.target.value))}
           />
         </label>
       </div>
 
-      <div className="items">
+      <h2 className="day-title">
+        {draft.items.length} {draft.items.length === 1 ? 'item' : 'items'}
+      </h2>
+      <ul className="rows card items">
         {draft.items.map((it, i) => (
-          <fieldset key={i} className="item">
-            <legend>
-              Item {i + 1}
+          <li key={i} className={warnFor('price', i).length || warnFor('name', i).length ? 'warn' : undefined}>
+            <div className="item-head">
+              <Avatar name={categoryIcon(it.category)} />
+              <input
+                className={cls('item-name', warnFor('name', i))}
+                aria-label={`Item ${i + 1} name`}
+                placeholder="Item name"
+                value={it.name}
+                onChange={(e) => setItem(i, { name: e.target.value })}
+              />
+              <input
+                className={cls('item-price', warnFor('price', i))}
+                aria-label={`Item ${i + 1} price`}
+                type="number"
+                inputMode="decimal"
+                value={it.price}
+                onChange={(e) => setItem(i, { price: Number(e.target.value) })}
+              />
+            </div>
+            <div className="item-more">
+              <select
+                aria-label={`Item ${i + 1} category`}
+                value={it.category}
+                onChange={(e) => setItem(i, { category: e.target.value as Item['category'] })}
+              >
+                {CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {CATEGORY_LABEL[c]}
+                  </option>
+                ))}
+              </select>
               <button
                 type="button"
-                className="link"
+                className="icon-button"
+                aria-label={`Remove item ${i + 1}`}
                 disabled={draft.items.length === 1}
                 onClick={() => setDraft((d) => ({ ...d, items: d.items.filter((_, j) => j !== i) }))}
               >
-                Remove
+                <Icon name="x" size={16} />
               </button>
-            </legend>
-            {ITEM_FIELDS.map((field) => {
-              const warnings = warnFor(field, i);
-              const value = it[field];
-              return (
-                <label key={field} className={cls(warnings)}>
-                  {field}
-                  {field === 'category' ? (
-                    <select value={it.category} onChange={(e) => setItem(i, { category: e.target.value as Item['category'] })}>
-                      {CATEGORIES.map((c) => (
-                        <option key={c}>{c}</option>
-                      ))}
-                    </select>
-                  ) : field === 'name' || field === 'name_en' ? (
-                    <input value={(value as string | null) ?? ''} onChange={(e) => setItem(i, { [field]: e.target.value })} />
-                  ) : (
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      value={(value as number | null) ?? ''}
-                      onChange={(e) =>
-                        setItem(i, { [field]: field === 'unit_price' ? num(e.target.value) : Number(e.target.value) })
-                      }
-                    />
-                  )}
-                </label>
-              );
-            })}
-          </fieldset>
+            </div>
+            <div className="item-more">
+              <label className={cls('inline', warnFor('qty', i))}>
+                Qty
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={it.qty}
+                  onChange={(e) => setItem(i, { qty: Number(e.target.value) })}
+                />
+              </label>
+              <label className={cls('inline', warnFor('unit_price', i))}>
+                Each
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  placeholder="–"
+                  value={it.unit_price ?? ''}
+                  onChange={(e) => setItem(i, { unit_price: num(e.target.value) })}
+                />
+              </label>
+              <input
+                className="item-translation"
+                aria-label={`Item ${i + 1} English name`}
+                placeholder="In English"
+                value={it.name_en ?? ''}
+                onChange={(e) => setItem(i, { name_en: e.target.value || null })}
+              />
+            </div>
+          </li>
         ))}
-        <button
-          type="button"
-          className="secondary"
-          onClick={() =>
-            setDraft((d) => ({
-              ...d,
-              items: [...d.items, { name: '', name_en: null, qty: 1, unit_price: null, price: 0, category: 'other' }],
-            }))
-          }
-        >
-          + Add item
-        </button>
-      </div>
+        <li>
+          <button
+            type="button"
+            className="row add-row"
+            onClick={() =>
+              setDraft((d) => ({
+                ...d,
+                items: [...d.items, { name: '', name_en: null, qty: 1, unit_price: null, price: 0, category: 'other' }],
+              }))
+            }
+          >
+            <Avatar name="plus" tone="mint" />
+            <b>Add item</b>
+          </button>
+        </li>
+      </ul>
 
-      <div className={validation.ok ? 'check ok' : 'check'}>
-        Items sum <b>{validation.items_sum}</b> · total <b>{draft.total}</b> · difference <b>{validation.difference}</b>
-        {validation.warnings.length > 0 && (
-          <ul>
-            {validation.warnings.map((w, i) => (
-              <li key={i}>
-                <code>{w.code}</code> {w.message}
-              </li>
-            ))}
-          </ul>
+      <div className={validation.ok ? 'summary ok' : 'summary'}>
+        <div className="summary-row">
+          <span>Items add up to</span>
+          <b>{money(validation.items_sum)}</b>
+        </div>
+        <div className="summary-row">
+          <span>Total paid</span>
+          <b>{money(draft.total)}</b>
+        </div>
+        {validation.ok ? (
+          <p className="summary-note">
+            <Icon name="check" size={16} /> Everything adds up
+          </p>
+        ) : (
+          validation.warnings.map((w, i) => (
+            <p key={i} className="summary-note">
+              <Icon name="alert" size={16} /> {w.message}
+            </p>
+          ))
         )}
       </div>
 
       {!parsed.success && (
-        <p className="error">Fix before saving: {parsed.error.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('; ')}</p>
+        <p className="error-text">
+          Fix before saving: {parsed.error.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('; ')}
+        </p>
       )}
-      {saveError && <p className="error">{saveError}</p>}
+      {saveError && <p className="error-text">{saveError}</p>}
 
-      <div className="actions">
-        <button type="button" className="secondary" onClick={onCancel}>
-          Cancel
-        </button>
-        <button type="button" disabled={!parsed.success || saving} onClick={save}>
+      <div className="action-bar">
+        <button type="button" className="primary-button" disabled={!parsed.success || saving} onClick={save}>
           {saving ? 'Saving…' : saveLabel}
+        </button>
+        <button type="button" className="text-button" onClick={onCancel}>
+          Cancel
         </button>
       </div>
     </div>

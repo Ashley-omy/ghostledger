@@ -7,8 +7,10 @@ import {
   type ExtractionResult,
   type LLMProvider,
   type Mode,
+  type Receipt,
 } from '@ghostledger/core';
 import { useRef, useState } from 'react';
+import { Avatar, Icon } from '../components/Icon';
 import { emptyReceipt, ReviewForm } from '../components/ReviewForm';
 import { useApp } from '../lib/app-context';
 import { useOnline } from '../lib/hooks';
@@ -19,16 +21,22 @@ type State =
   | { step: 'review'; result: ExtractionResult | null }
   | { step: 'error'; error: unknown; photo: File };
 
-export function ScanScreen({ goToSettings }: { goToSettings: () => void }) {
-  const { ledger, providers, settings, modelReady } = useApp();
+interface Props {
+  goToSettings: () => void;
+  /** Called after a receipt is saved, so the app can show it in the ledger. */
+  onSaved: (receipt: Receipt) => void;
+}
+
+export function ScanScreen({ goToSettings, onSaved }: Props) {
+  const { ledger, providers, settings, updateSettings, modelReady } = useApp();
   const isOnline = useOnline();
-  const [mode, setMode] = useState<Mode>(settings.defaultMode);
+  // One app-wide mode, saved in Settings, so the choice sticks across tabs and shows in the header.
+  const mode = settings.defaultMode;
+  const setMode = (m: Mode) => updateSettings({ defaultMode: m });
   const [state, setState] = useState<State>({ step: 'idle' });
-  const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
 
   const run = async (photo: File, requested: Mode) => {
-    setSavedMsg(null);
     abort.current = new AbortController();
     try {
       const { provider, fallback } = await selectProvider(providers, requested);
@@ -54,84 +62,97 @@ export function ScanScreen({ goToSettings }: { goToSettings: () => void }) {
   if (state.step === 'review') {
     return (
       <section>
-        <h2>Review</h2>
+        <h1>{state.result ? 'Check your receipt' : 'New receipt'}</h1>
         <ReviewForm
           initial={state.result?.draft ?? emptyReceipt()}
           extraWarnings={state.result?.validation.warnings.filter((w) => w.code === 'TAX_LOOKS_LIKE_RATE' || w.code === 'MISSING_DATE')}
           meta={state.result?.meta}
+          saveLabel="Save receipt"
           onCancel={() => setState({ step: 'idle' })}
           onSave={async (receipt) => {
-            const saved = await ledger.create(receipt);
-            setSavedMsg(`Saved receipt #${saved.id} from ${saved.store || 'unknown store'}.`);
-            setState({ step: 'idle' });
+            onSaved(await ledger.create(receipt));
           }}
         />
       </section>
     );
   }
 
+  if (state.step === 'working') {
+    return (
+      <section className="working">
+        <div className="spinner" aria-hidden />
+        <h1>Reading your receipt</h1>
+        <p className="muted">
+          {state.provider.mode === 'offline' ? 'On this phone' : 'With Gemini'}. This can take up to a minute.
+        </p>
+        {state.preview && <pre className="stream">{state.preview}</pre>}
+        <button className="chip-button" onClick={() => abort.current?.abort()}>
+          Cancel
+        </button>
+      </section>
+    );
+  }
+
   return (
     <section>
-      <h2>Scan a receipt</h2>
+      <h1>Add a receipt</h1>
 
-      {!modelReady && (
-        <div className="banner">
-          The offline model isn't downloaded yet.{' '}
-          <button className="link" onClick={goToSettings}>
-            Download it in Settings
-          </button>{' '}
-          (Wi-Fi recommended), or enter receipts manually.
-        </div>
-      )}
-
-      <div className="segmented" role="radiogroup" aria-label="Mode">
-        <button aria-pressed={mode === 'offline'} onClick={() => setMode('offline')}>
-          📴 Offline · on this phone
+      <div className="segmented" role="radiogroup" aria-label="Where the receipt is read">
+        <button role="radio" aria-checked={mode === 'offline'} onClick={() => setMode('offline')}>
+          On this phone
         </button>
-        <button aria-pressed={mode === 'online'} onClick={() => setMode('online')} disabled={!isOnline}>
-          ☁️ Online · Gemini
+        <button role="radio" aria-checked={mode === 'online'} onClick={() => setMode('online')} disabled={!isOnline}>
+          Gemini
         </button>
       </div>
-      {mode === 'online' && <p className="muted">The photo will be sent to the Gemini API.</p>}
 
-      {state.step === 'working' ? (
-        <div className="working">
-          <div className="spinner" aria-hidden />
-          <p>
-            Reading the receipt with <b>{state.provider.extractModel}</b>… This can take a minute on a phone.
-          </p>
-          {state.preview && <pre className="stream">{state.preview}</pre>}
-          <button className="secondary" onClick={() => abort.current?.abort()}>
-            Cancel
-          </button>
-        </div>
-      ) : (
-        <>
-          <label className="button big">
-            📸 Take or choose a photo
-            <input type="file" accept="image/*" capture="environment" hidden onChange={onPhoto} />
-          </label>
-          <button className="secondary" onClick={() => setState({ step: 'review', result: null })}>
-            ✍️ Enter manually
-          </button>
-        </>
+      <div className="tiles">
+        <label className="tile primary">
+          <Icon name="camera" size={28} />
+          <b>Scan receipt</b>
+          <small>{mode === 'offline' ? 'The photo stays on this phone' : 'The photo is sent to Gemini'}</small>
+          <input type="file" accept="image/*" capture="environment" hidden onChange={onPhoto} />
+        </label>
+        <button className="tile" onClick={() => setState({ step: 'review', result: null })}>
+          <Icon name="pencil" size={28} />
+          <b>Type it in</b>
+          <small>For cash or lost receipts</small>
+        </button>
+      </div>
+
+      {!modelReady && mode === 'offline' && (
+        <ul className="rows card">
+          <li>
+            <button className="row" onClick={goToSettings}>
+              <Avatar name="download" tone="mint" />
+              <span className="row-text">
+                <b>Download the offline model</b>
+                <small>Once, about 2–3 GB. Use Wi-Fi.</small>
+              </span>
+              <Icon name="chevronRight" size={18} />
+            </button>
+          </li>
+        </ul>
       )}
 
-      {savedMsg && <p className="success">{savedMsg}</p>}
-
       {state.step === 'error' && (
-        <div className="error">
-          <p>{toUserMessage(state.error)}</p>
-          {state.error instanceof AppError && state.error.code === 'MODEL_NOT_DOWNLOADED' && (
-            <div className="actions">
-              <button onClick={goToSettings}>Open Settings</button>
-              {isOnline && settings.geminiApiKey && (
-                <button className="secondary" onClick={() => run(state.photo, 'online')}>
-                  Use Online once
+        <div className="notice warn">
+          <Avatar name="alert" tone="warn" />
+          <div>
+            <p>{toUserMessage(state.error)}</p>
+            {state.error instanceof AppError && state.error.code === 'MODEL_NOT_DOWNLOADED' && (
+              <div className="detail-actions">
+                <button className="chip-button primary" onClick={goToSettings}>
+                  Open Settings
                 </button>
-              )}
-            </div>
-          )}
+                {isOnline && settings.geminiApiKey && (
+                  <button className="chip-button" onClick={() => run(state.photo, 'online')}>
+                    Use Gemini once
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </section>

@@ -1,8 +1,11 @@
 /** Offline model download, device capabilities, storage and Online mode settings. */
 import { requestPersistentStorage, toUserMessage, type DownloadProgress, type Mode } from '@ghostledger/core';
 import { useRef, useState } from 'react';
+import { Avatar, Icon } from '../components/Icon';
 import { useApp } from '../lib/app-context';
 import { formatBytes } from '../lib/files';
+
+const YesNo = ({ ok }: { ok: boolean }) => <span className={ok ? 'yes' : 'muted'}>{ok ? 'Yes' : 'No'}</span>;
 
 export function SettingsScreen() {
   const { caps, local, settings, updateSettings, modelReady, refreshModelStatus } = useApp();
@@ -38,93 +41,130 @@ export function SettingsScreen() {
 
   return (
     <section>
-      <h2>Settings</h2>
+      <h1>Settings</h1>
 
-      <div className="card">
-        <h3>📴 Offline model</h3>
-        <p>
-          Gemma 4 E2B · <code>{runtime.dtype}</code> on <code>{runtime.device}</code>
-          {runtime.device === 'wasm' && ' (no WebGPU — this will be slow)'}
-        </p>
-        <p>Status: {modelReady ? '✅ Ready offline' : 'Not downloaded'}</p>
+      <h2 className="day-title">Offline model</h2>
+      <ul className="rows card">
+        <li className="row">
+          <Avatar name="phone" tone={modelReady ? 'mint' : 'neutral'} />
+          <span className="row-text">
+            <b>Gemma 4 E2B</b>
+            <small>{runtime.device === 'wasm' ? 'No GPU support here, so it will be slow' : 'Runs on this phone’s GPU'}</small>
+          </span>
+          <span className={modelReady ? 'yes' : 'muted'}>{modelReady ? 'Ready' : 'Not downloaded'}</span>
+        </li>
         {downloading ? (
-          <>
+          <li className="row stack">
             <progress max={100} value={progress?.percent ?? undefined} />
-            <p className="muted">
-              {progress?.percent != null ? `${progress.percent.toFixed(0)}%` : 'Starting…'} {progress?.file ?? ''}
-            </p>
-            <button className="secondary" onClick={() => abort.current?.abort()}>
-              Cancel
-            </button>
-          </>
+            <span className="split">
+              <small className="muted">
+                {progress?.percent != null ? `${progress.percent.toFixed(0)}%` : 'Starting…'} {progress?.file ?? ''}
+              </small>
+              <button className="text-button" onClick={() => abort.current?.abort()}>
+                Cancel
+              </button>
+            </span>
+          </li>
         ) : modelReady ? (
-          <button className="danger" onClick={remove}>
-            Delete model
-          </button>
+          <li>
+            <button className="row danger-text" onClick={remove}>
+              Delete model
+            </button>
+          </li>
         ) : (
-          <>
-            <p className="muted">Download is a few GB. Use Wi-Fi. You only need to do this once.</p>
-            <button onClick={download}>Download offline model</button>
-          </>
+          <li>
+            <button className="row" onClick={download}>
+              <Avatar name="download" tone="mint" />
+              <span className="row-text">
+                <b>Download</b>
+                <small>About 2–3 GB, once. Use Wi-Fi.</small>
+              </span>
+              <Icon name="chevronRight" size={18} />
+            </button>
+          </li>
         )}
-        {error && <p className="error">{error}</p>}
-      </div>
+      </ul>
+      {error && <p className="error-text">{error}</p>}
 
-      <div className="card">
-        <h3>Default mode</h3>
-        <select value={settings.defaultMode} onChange={(e) => updateSettings({ defaultMode: e.target.value as Mode })}>
-          <option value="offline">Offline — on this phone (recommended)</option>
-          <option value="online">Online — Gemini API</option>
-        </select>
-        <label>
-          Insights language
-          <input value={settings.language} onChange={(e) => updateSettings({ language: e.target.value })} />
-        </label>
-      </div>
+      <h2 className="day-title">Preferences</h2>
+      <ul className="rows card">
+        <li>
+          <label className="row">
+            <span className="row-text">
+              <b>Read receipts</b>
+            </span>
+            <select value={settings.defaultMode} onChange={(e) => updateSettings({ defaultMode: e.target.value as Mode })}>
+              <option value="offline">On this phone</option>
+              <option value="online">With Gemini</option>
+            </select>
+          </label>
+        </li>
+        <li>
+          <label className="row">
+            <span className="row-text">
+              <b>Advice language</b>
+            </span>
+            <input value={settings.language} onChange={(e) => updateSettings({ language: e.target.value })} />
+          </label>
+        </li>
+      </ul>
 
-      <div className="card">
-        <h3>☁️ Online mode (optional)</h3>
-        <label>
-          Gemini API key
+      <h2 className="day-title">Gemini (optional)</h2>
+      <div className="card padded">
+        <label className="field">
+          <span>API key</span>
           <input
             type="password"
             autoComplete="off"
-            placeholder="Stored only on this device"
+            placeholder="Stored only on this phone"
             value={settings.geminiApiKey}
             onChange={(e) => updateSettings({ geminiApiKey: e.target.value.trim() })}
           />
         </label>
-        <label>
-          Proxy URL (optional)
+        <label className="field">
+          <span>Proxy URL</span>
           <input
             type="url"
-            placeholder="https://… (leave empty to call Gemini directly)"
+            placeholder="Leave empty to call Gemini directly"
             value={settings.geminiProxyUrl}
             onChange={(e) => updateSettings({ geminiProxyUrl: e.target.value.trim() })}
           />
         </label>
       </div>
 
-      <div className="card">
-        <h3>This device</h3>
-        <ul className="plain">
-          <li>WebGPU: {caps.webgpu ? '✅' : '❌'} · shader-f16: {caps.shaderF16 ? '✅' : '❌'}</li>
-          <li>OPFS (ledger storage): {caps.opfs ? '✅' : '❌'}</li>
-          <li>
-            Persistent storage: {persisted ? '✅' : '❌'}{' '}
-            {!persisted && (
-              <button className="link" onClick={async () => setPersisted(await requestPersistentStorage())}>
-                Request
-              </button>
-            )}
-          </li>
-          {caps.storage && (
-            <li>
-              Storage used: {formatBytes(caps.storage.usage)} of {formatBytes(caps.storage.quota)}
-            </li>
+      <h2 className="day-title">This phone</h2>
+      <ul className="rows card">
+        <li className="row">
+          <span className="row-text">GPU acceleration</span>
+          <YesNo ok={caps.webgpu} />
+        </li>
+        <li className="row">
+          <span className="row-text">Fast GPU math</span>
+          <YesNo ok={caps.shaderF16} />
+        </li>
+        <li className="row">
+          <span className="row-text">Ledger saved on this phone</span>
+          <YesNo ok={caps.opfs} />
+        </li>
+        <li className="row">
+          <span className="row-text">Protected from automatic cleanup</span>
+          {persisted ? (
+            <YesNo ok />
+          ) : (
+            <button className="link" onClick={async () => setPersisted(await requestPersistentStorage())}>
+              Turn on
+            </button>
           )}
-        </ul>
-      </div>
+        </li>
+        {caps.storage && (
+          <li className="row">
+            <span className="row-text">Storage used</span>
+            <span className="muted">
+              {formatBytes(caps.storage.usage)} of {formatBytes(caps.storage.quota)}
+            </span>
+          </li>
+        )}
+      </ul>
     </section>
   );
 }

@@ -17,16 +17,25 @@ import {
   type Summary,
 } from '@ghostledger/core';
 import { useEffect, useState } from 'react';
+import { Avatar, categoryIcon, Icon } from '../components/Icon';
+import { MonthSwitcher } from '../components/MonthSwitcher';
 import { useApp } from '../lib/app-context';
 import { formatMoney } from '../lib/files';
 import { currentMonth, useOnline } from '../lib/hooks';
 
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
 export function InsightsScreen() {
-  const { ledger, providers, settings } = useApp();
+  const { ledger, providers, settings, updateSettings } = useApp();
   const isOnline = useOnline();
   const [month, setMonth] = useState(currentMonth);
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [mode, setMode] = useState<Mode>(settings.defaultMode);
+  // The same app-wide mode as the Add screen (saved in Settings).
+  const mode = settings.defaultMode;
+  const setMode = (m: Mode) => {
+    updateSettings({ defaultMode: m });
+    setPending(null);
+  };
   const [privacy, setPrivacy] = useState<Privacy>('aggregates');
   const [pending, setPending] = useState<{ preview: InsightPreview; provider: LLMProvider; fallback: boolean } | null>(null);
   const [result, setResult] = useState<InsightResult | null>(null);
@@ -72,83 +81,114 @@ export function InsightsScreen() {
     }
   };
 
+  // Bars are relative to the biggest category in the same currency.
+  const maxByCurrency = new Map<string, number>();
+  for (const c of summary?.by_category ?? []) {
+    maxByCurrency.set(c.currency, Math.max(maxByCurrency.get(c.currency) ?? 0, c.amount));
+  }
+
   return (
     <section>
-      <h2>Insights</h2>
-      <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
+      <div className="balance">
+        <MonthSwitcher month={month} onChange={setMonth} />
+        <p className="balance-label">
+          {summary?.receipt_count ?? 0} {summary?.receipt_count === 1 ? 'receipt' : 'receipts'}
+        </p>
+        {summary && Object.keys(summary.currency_totals).length > 0 ? (
+          Object.entries(summary.currency_totals).map(([c, v]) => {
+            const [n, code] = formatMoney(v, c).split(' ');
+            return (
+              <p key={c} className="balance-amount">
+                {n} <span>{code}</span>
+              </p>
+            );
+          })
+        ) : (
+          <p className="balance-amount">0</p>
+        )}
+      </div>
 
-      {summary && (
-        <div className="card">
-          <p>
-            <b>{summary.receipt_count}</b> receipts ·{' '}
-            {Object.entries(summary.currency_totals)
-              .map(([c, v]) => formatMoney(v, c))
-              .join(' · ') || 'nothing yet'}
-          </p>
-          <table>
-            <tbody>
-              {summary.by_category.map((c) => (
-                <tr key={`${c.category}-${c.currency}`}>
-                  <td>{c.category}</td>
-                  <td className="num">{c.count}×</td>
-                  <td className="num">{formatMoney(c.amount, c.currency)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {summary && summary.receipt_count === 0 && (
+        <div className="empty">
+          <Avatar name="chart" />
+          <p className="muted">Nothing saved this month yet.</p>
         </div>
       )}
 
-      <div className="segmented" role="radiogroup" aria-label="Mode">
-        <button aria-pressed={mode === 'offline'} onClick={() => setMode('offline')}>
-          📴 On this phone
-        </button>
-        <button aria-pressed={mode === 'online'} onClick={() => setMode('online')} disabled={!isOnline}>
-          ☁️ Gemini 31B
-        </button>
-      </div>
+      {summary && summary.receipt_count > 0 && (
+        <>
+          <h2 className="day-title">Where it went</h2>
+          <ul className="rows card">
+            {summary.by_category.map((c) => (
+              <li key={`${c.category}-${c.currency}`} className="row">
+                <Avatar name={categoryIcon(c.category)} />
+                <span className="row-text">
+                  <b>{capitalize(c.category)}</b>
+                  <span className="bar">
+                    <span style={{ width: `${(c.amount / (maxByCurrency.get(c.currency) || 1)) * 100}%` }} />
+                  </span>
+                </span>
+                <span className="row-amount">{formatMoney(c.amount, c.currency)}</span>
+              </li>
+            ))}
+          </ul>
 
-      {mode === 'online' && (
-        <label>
-          What may leave this phone
-          <select value={privacy} onChange={(e) => setPrivacy(e.target.value as Privacy)}>
-            <option value="aggregates">Category totals only (recommended)</option>
-            <option value="full">Every item (no images)</option>
-          </select>
-        </label>
-      )}
-
-      <button onClick={preview} disabled={!summary?.receipt_count || busy}>
-        Preview what will be analyzed
-      </button>
-
-      {pending && (
-        <div className="card">
-          <p>
-            Destination: <b>{pending.preview.destination}</b>
-            {pending.fallback && ' (Online unavailable — using this phone instead)'}
-          </p>
-          <pre className="payload">{JSON.stringify(pending.preview.payload, null, 2)}</pre>
-          <div className="actions">
-            <button className="secondary" onClick={() => setPending(null)}>
-              Cancel
+          <h2 className="day-title">Get advice</h2>
+          <div className="segmented" role="radiogroup" aria-label="Who analyzes the month">
+            <button role="radio" aria-checked={mode === 'offline'} onClick={() => setMode('offline')}>
+              On this phone
             </button>
-            <button onClick={send} disabled={busy}>
-              {busy ? 'Thinking…' : pending.preview.mode === 'online' ? 'Send exactly this' : 'Analyze on this phone'}
+            <button role="radio" aria-checked={mode === 'online'} onClick={() => setMode('online')} disabled={!isOnline}>
+              Gemini 31B
             </button>
           </div>
+
+          {mode === 'online' && (
+            <label className="field">
+              <span>What may leave this phone</span>
+              <select value={privacy} onChange={(e) => setPrivacy(e.target.value as Privacy)}>
+                <option value="aggregates">Category totals only (recommended)</option>
+                <option value="full">Every item, never images</option>
+              </select>
+            </label>
+          )}
+
+          {!pending && !result && (
+            <button className="primary-button" onClick={preview} disabled={busy}>
+              See what will be analyzed
+            </button>
+          )}
+        </>
+      )}
+
+      {pending && (
+        <div className="card padded">
+          <div className="notice flat">
+            <Avatar name={pending.preview.mode === 'online' ? 'cloud' : 'lock'} tone={pending.preview.mode === 'online' ? 'warn' : 'mint'} />
+            <p>
+              Goes to <b>{pending.preview.destination}</b>
+              {pending.fallback && ' (Gemini unavailable, using this phone)'}
+            </p>
+          </div>
+          <pre className="payload">{JSON.stringify(pending.preview.payload, null, 2)}</pre>
+          <button className="primary-button" onClick={send} disabled={busy}>
+            {busy ? 'Thinking…' : pending.preview.mode === 'online' ? 'Send exactly this' : 'Analyze on this phone'}
+          </button>
+          <button className="text-button" onClick={() => setPending(null)}>
+            Cancel
+          </button>
         </div>
       )}
 
       {busy && streamed && <pre className="stream">{streamed}</pre>}
-      {error && <p className="error">{error}</p>}
+      {error && <p className="error-text">{error}</p>}
 
       {result && (
-        <div className="card">
+        <div className="card padded">
           {/* TODO: render Markdown (e.g. react-markdown). Plain text keeps the skeleton dependency-free. */}
           <div className="markdown">{result.text}</div>
-          <p className="muted">
-            {result.meta.model} · {(result.meta.elapsed_ms / 1000).toFixed(1)} s
+          <p className="muted small">
+            <Icon name="check" size={14} /> {result.meta.model} · {(result.meta.elapsed_ms / 1000).toFixed(0)} s
           </p>
         </div>
       )}
